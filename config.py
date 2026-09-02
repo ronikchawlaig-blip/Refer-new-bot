@@ -36,9 +36,9 @@ def load_settings() -> Settings:
         database_url=database_url,
         owner_id=owner_id,
         bot_name=os.getenv("BOT_NAME", "Refer & Earn"),
-        support_username=os.getenv("SUPPORT_BOT_USERNAME", "@Referrsupportt_bot").strip(),
+        support_username=os.getenv("SUPPORT_BOT_USERNAME", "@GrabSupportbot").strip(),
         support_link=os.getenv(
-            "SUPPORT_BOT_LINK", "https://t.me/Referrsupportt_bot"
+            "SUPPORT_BOT_LINK", "https://t.me/GrabSupportbot"
         ).strip(),
         support_button_text=os.getenv("SUPPORT_BUTTON_TEXT", "💬 Support"),
         support_instructions=os.getenv(
