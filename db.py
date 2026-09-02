@@ -332,22 +332,12 @@ class Database:
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
-                        referral = await self._fetchrow_referral_variants(
-                            conn,
-                            (
-                                "INSERT INTO referrals (referrer_id, referred_user_id, status) "
-                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
-                                "RETURNING referrer_id",
-                                "INSERT INTO referrals (referrer_id, referred_id, state) "
-                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
-                                "RETURNING referrer_id",
-                                "INSERT INTO referrals (referrer_id, referred_id, status) "
-                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
-                                "RETURNING referrer_id",
-                                "INSERT INTO referrals (referrer_id, referred_user_id, state) "
-                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
-                                "RETURNING referrer_id",
-                            ),
+                        user_column = self._referral_user_column()
+                        state_column = self._referral_state_column()
+                        referral = await conn.fetchrow(
+                            f"INSERT INTO referrals (referrer_id, {user_column}, {state_column}) "
+                            f"VALUES ($1,$2,'pending') ON CONFLICT ({user_column}) DO NOTHING "
+                            "RETURNING referrer_id",
                             referrer_id,
                             telegram_id,
                         )
@@ -501,14 +491,11 @@ class Database:
             await conn.execute(
                 "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
             )
-            await self._execute_referral_variants(
-                conn,
-                (
-                    "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
-                    "UPDATE referrals SET state='subscribed' WHERE referred_id=$1 AND state='pending'",
-                    "UPDATE referrals SET status='subscribed' WHERE referred_id=$1 AND status='pending'",
-                    "UPDATE referrals SET state='subscribed' WHERE referred_user_id=$1 AND state='pending'",
-                ),
+            user_column = self._referral_user_column()
+            state_column = self._referral_state_column()
+            await conn.execute(
+                f"UPDATE referrals SET {state_column}='subscribed' "
+                f"WHERE {user_column}=$1 AND {state_column}='pending'",
                 user_id,
             )
 
@@ -518,43 +505,27 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET disclaimer_accepted=TRUE WHERE telegram_id=$1", user_id
                 )
-                await self._execute_referral_variants(
-                    conn,
-                    (
-                        "UPDATE referrals SET status='disclaimer_accepted' "
-                        "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
-                        "UPDATE referrals SET state='disclaimer_accepted' "
-                        "WHERE referred_id=$1 AND state IN ('pending','subscribed')",
-                        "UPDATE referrals SET status='disclaimer_accepted' "
-                        "WHERE referred_id=$1 AND status IN ('pending','subscribed')",
-                        "UPDATE referrals SET state='disclaimer_accepted' "
-                        "WHERE referred_user_id=$1 AND state IN ('pending','subscribed')",
-                    ),
+                user_column = self._referral_user_column()
+                state_column = self._referral_state_column()
+                await conn.execute(
+                    f"UPDATE referrals SET {state_column}='disclaimer_accepted' "
+                    f"WHERE {user_column}=$1 AND {state_column} IN ('pending','subscribed')",
                     user_id,
                 )
 
     async def complete_gate(self, user_id: int) -> int | None:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
                 )
-                row = await self._fetchrow_referral_variants(
-                    conn,
-                    (
-                        "UPDATE referrals SET status='completed', completed_at=NOW() "
-                        "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
-                        "RETURNING referrer_id",
-                        "UPDATE referrals SET state='completed', completed_at=NOW() "
-                        "WHERE referred_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
-                        "RETURNING referrer_id",
-                        "UPDATE referrals SET status='completed', completed_at=NOW() "
-                        "WHERE referred_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
-                        "RETURNING referrer_id",
-                        "UPDATE referrals SET state='completed', completed_at=NOW() "
-                        "WHERE referred_user_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
-                        "RETURNING referrer_id",
-                    ),
+                row = await conn.fetchrow(
+                    f"UPDATE referrals SET {state_column}='completed', completed_at=NOW() "
+                    f"WHERE {user_column}=$1 AND {state_column} IN "
+                    "('pending','subscribed','disclaimer_accepted') "
+                    "RETURNING referrer_id",
                     user_id,
                 )
                 if row:
@@ -1004,18 +975,13 @@ class Database:
                     "UPDATE users SET referral_count=0, points=0, is_verified=FALSE WHERE telegram_id=$1",
                     user_id,
                 )
-                try:
-                    async with conn.transaction():
-                        await conn.execute(
-                            "UPDATE referrals SET status='invalid' WHERE referrer_id=$1 OR referred_user_id=$1",
-                            user_id,
-                        )
-                except asyncpg.exceptions.UndefinedColumnError:
-                    async with conn.transaction():
-                        await conn.execute(
-                            "UPDATE referrals SET state='invalid' WHERE referrer_id=$1 OR referred_id=$1",
-                            user_id,
-                        )
+                user_column = self._referral_user_column()
+                state_column = self._referral_state_column()
+                await conn.execute(
+                    f"UPDATE referrals SET {state_column}='invalid' "
+                    f"WHERE referrer_id=$1 OR {user_column}=$1",
+                    user_id,
+                )
 
     async def list_admins(self) -> list[dict[str, Any]]:
         return [dict(row) for row in await self._p().fetch("SELECT * FROM admins ORDER BY role,telegram_id")]
