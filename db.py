@@ -301,11 +301,9 @@ class Database:
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
-                        user_column = self._referral_user_column()
-                        state_column = self._referral_state_column()
                         referral = await conn.fetchrow(
-                            f"INSERT INTO referrals (referrer_id, {user_column}, {state_column}) "
-                            "VALUES ($1,$2,'pending') ON CONFLICT (" + user_column + ") DO NOTHING "
+                            "INSERT INTO referrals (referrer_id, referred_user_id, status) "
+                            "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
                             "RETURNING referrer_id",
                             referrer_id,
                             telegram_id,
@@ -322,13 +320,12 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
-        state_column = self._referral_state_column()
         row = await self._p().fetchrow(
-            f"""
+            """
             SELECT
               COUNT(*)::int AS total_referrals,
-              COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
-              COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
+              COUNT(*) FILTER (WHERE status='completed')::int AS valid_referrals,
+              COUNT(*) FILTER (WHERE status<>'completed')::int AS invalid_referrals
             FROM referrals
             WHERE referrer_id=$1
             """,
@@ -440,41 +437,35 @@ class Database:
                     )
 
     async def mark_subscribed(self, user_id: int) -> None:
-        user_column = self._referral_user_column()
-        state_column = self._referral_state_column()
         await self._p().execute(
             "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
         )
         await self._p().execute(
-            f"UPDATE referrals SET {state_column}='subscribed' WHERE {user_column}=$1 AND {state_column}='pending'",
+            "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
             user_id,
         )
 
     async def accept_disclaimer(self, user_id: int) -> None:
-        user_column = self._referral_user_column()
-        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE users SET disclaimer_accepted=TRUE WHERE telegram_id=$1", user_id
                 )
                 await conn.execute(
-                    f"UPDATE referrals SET {state_column}='disclaimer_accepted' "
-                    f"WHERE {user_column}=$1 AND {state_column} IN ('pending','subscribed')",
+                    "UPDATE referrals SET status='disclaimer_accepted' "
+                    "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
                     user_id,
                 )
 
     async def complete_gate(self, user_id: int) -> int | None:
-        user_column = self._referral_user_column()
-        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
                 )
                 row = await conn.fetchrow(
-                    f"UPDATE referrals SET {state_column}='completed', completed_at=NOW() "
-                    f"WHERE {user_column}=$1 AND {state_column} IN ('pending','subscribed','disclaimer_accepted') "
+                    "UPDATE referrals SET status='completed', completed_at=NOW() "
+                    "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
                     "RETURNING referrer_id",
                     user_id,
                 )
@@ -488,15 +479,14 @@ class Database:
                 return None
 
     async def dashboard(self) -> dict[str, int]:
-        state_column = self._referral_state_column()
         row = await self._p().fetchrow(
-            f"""
+            """
             SELECT
               (SELECT COUNT(*) FROM users)::int total_users,
               (SELECT COUNT(*) FROM users WHERE joined_at >= NOW()-INTERVAL '24 hours')::int new_users,
               (SELECT COUNT(*) FROM users WHERE is_verified)::int verified_users,
-              (SELECT COUNT(*) FROM referrals WHERE {state_column}='completed')::int completed_referrals,
-              (SELECT COUNT(*) FROM referrals WHERE {state_column} IN ('pending','subscribed','disclaimer_accepted'))::int pending_referrals,
+              (SELECT COUNT(*) FROM referrals WHERE status='completed')::int completed_referrals,
+              (SELECT COUNT(*) FROM referrals WHERE status IN ('pending','subscribed','disclaimer_accepted'))::int pending_referrals,
               (SELECT COUNT(*) FROM rewards WHERE status='available')::int available_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status IN ('assigned','delivered'))::int assigned_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status='delivered')::int delivered_rewards,
@@ -898,8 +888,6 @@ class Database:
         await self._p().execute("UPDATE users SET banned=$1 WHERE telegram_id=$2", banned, user_id)
 
     async def reset_progress(self, user_id: int) -> None:
-        user_column = self._referral_user_column()
-        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -907,7 +895,7 @@ class Database:
                     user_id,
                 )
                 await conn.execute(
-                    f"UPDATE referrals SET {state_column}='invalid' WHERE referrer_id=$1 OR {user_column}=$1",
+                    "UPDATE referrals SET status='invalid' WHERE referrer_id=$1 OR referred_user_id=$1",
                     user_id,
                 )
 
