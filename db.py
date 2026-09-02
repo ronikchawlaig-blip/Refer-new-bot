@@ -78,9 +78,11 @@ CREATE TABLE IF NOT EXISTS stock_products (
   kind TEXT NOT NULL DEFAULT 'text',
   text_content TEXT,
   file_id TEXT,
+  how_to_use TEXT,
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE stock_products ADD COLUMN IF NOT EXISTS how_to_use TEXT;
 CREATE TABLE IF NOT EXISTS stock_items (
   id BIGSERIAL PRIMARY KEY,
   product_id BIGINT NOT NULL REFERENCES stock_products(id) ON DELETE CASCADE,
@@ -673,6 +675,14 @@ class Database:
             text_content,
             file_id,
         )
+
+    async def update_stock_how_to_use(self, product_id: int, how_to_use: str) -> bool:
+        updated = await self._p().execute(
+            "UPDATE stock_products SET how_to_use=$1 WHERE id=$2",
+            how_to_use[:4000],
+            product_id,
+        )
+        return updated.endswith("1")
 
     async def restock_product(self, product_id: int, amount: int) -> bool:
         updated = await self._p().execute(

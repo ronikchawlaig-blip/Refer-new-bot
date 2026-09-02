@@ -81,6 +81,11 @@ async def send_reward(bot: Bot, user_id: int, reward: dict[str, Any]) -> None:
         await bot.send_message(user_id, body or "Your reward is ready.")
 
 
+async def send_stock_how_to_use(bot: Bot, user_id: int, how_to_use: str | None) -> None:
+    if how_to_use:
+        await bot.send_message(user_id, f"📖 <b>How to use</b>\n\n{how_to_use}")
+
+
 async def send_broadcast(bot: Bot, user_id: int, job: dict[str, Any]) -> None:
     payload = job["payload"]
     kind = job["kind"]

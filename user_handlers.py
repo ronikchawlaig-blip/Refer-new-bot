@@ -9,7 +9,7 @@ from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from db import Database
-from services import animated, send_reward
+from services import animated, send_reward, send_stock_how_to_use
 from states import SessionStore
 from ui import (
     admin_home,
@@ -540,6 +540,14 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         try:
             await send_reward(bot, callback.from_user.id, claim)
             await db.mark_stock_claim(claim["id"], callback.from_user.id, True)
+            try:
+                await send_stock_how_to_use(
+                    bot,
+                    callback.from_user.id,
+                    claim.get("how_to_use"),
+                )
+            except Exception:
+                log.exception("Unable to send How to Use for stock claim %s", claim["id"])
             await callback.message.edit_text(
                 f"✅ <b>{escape(str(claim['name']))}</b> claimed successfully.\n\n"
                 f"Points spent: <b>{claim['points_spent']}</b>\n"

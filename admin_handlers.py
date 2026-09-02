@@ -87,6 +87,7 @@ def setup_admin_router(
             "stock_add": "rewards",
             "stock_product": "rewards",
             "stock_add_code": "rewards",
+            "stock_how_to_use": "rewards",
             "stock_codes_done": "rewards",
             "stock_toggle": "rewards",
             "milestones": "rewards",
@@ -273,11 +274,14 @@ def setup_admin_router(
                 f"Available codes: <b>{product['available_stock']}</b>\n"
                 f"Used codes: <b>{product['used_codes']}</b>\n"
                 f"Failed codes: <b>{product['failed_codes']}</b>\n\n"
+                "<b>How to use:</b>\n"
+                f"{product['how_to_use'] or 'Not added yet.'}\n\n"
                 "Each code/reward is stored separately. When a user claims one, "
                 "that code is automatically removed from available stock.",
                 admin_section(
                     [
                         [("➕ Add New Code", f"a:stock_add_code:{product['id']}")],
+                        [("📝 Add/Edit How to Use", f"a:stock_how_to_use:{product['id']}")],
                         [("← Stock List", "a:stock")],
                     ]
                 ),
@@ -289,6 +293,15 @@ def setup_admin_router(
             await callback.message.answer(
                 f"Send one new code/reward for <b>{product_name}</b> now.\n"
                 "You can send text/code, photo, video, GIF, document or APK."
+            )
+        elif action == "stock_how_to_use" and len(parts) > 2:
+            product = await db.get_stock_product(int(parts[2]))
+            product_name = product["name"] if product else "this product"
+            sessions.set(admin_id, "stock_how_to_use", product_id=int(parts[2]))
+            await callback.message.answer(
+                f"Send the How to Use message for <b>{product_name}</b>.\n"
+                "This message will be delivered after the reward/code.\n"
+                "You can send formatted text, links or steps."
             )
         elif action == "stock_codes_done":
             sessions.pop(admin_id)
@@ -808,6 +821,36 @@ def setup_admin_router(
                 )
             except (TypeError, ValueError):
                 await message.answer("Please send a valid code or reward content.")
+        elif flow == "stock_how_to_use":
+            try:
+                product_id = int(session["product_id"])
+                if not body:
+                    raise ValueError
+
+                async def save_how_to_use() -> bool:
+                    updated = await db.update_stock_how_to_use(product_id, body)
+                    if updated:
+                        await db.audit(
+                            message.from_user.id,
+                            "stock_how_to_use_updated",
+                            "stock_product",
+                            str(product_id),
+                        )
+                    return updated
+
+                status, updated = await animate_message(
+                    "Saving How to Use",
+                    save_how_to_use,
+                    progress=True,
+                )
+                sessions.pop(message.from_user.id)
+                await status.edit_text(
+                    "✓ How to Use message updated successfully."
+                    if updated
+                    else "This stock product could not be found."
+                )
+            except (TypeError, ValueError):
+                await message.answer("Please send a non-empty How to Use message.")
         elif flow == "reward_meta":
             try:
                 required, _, name = (body or "").partition("|")
