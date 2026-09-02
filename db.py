@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS stock_claims (
   UNIQUE (product_id, user_id)
 );
 ALTER TABLE stock_claims ADD COLUMN IF NOT EXISTS item_id BIGINT REFERENCES stock_items(id) ON DELETE RESTRICT;
+ALTER TABLE stock_claims DROP CONSTRAINT IF EXISTS stock_claims_product_id_user_id_key;
 CREATE TABLE IF NOT EXISTS admins (
   telegram_id BIGINT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('owner','admin')),
@@ -687,15 +688,6 @@ class Database:
                 )
                 if not product or not product["enabled"]:
                     return "unavailable", None
-                previous_claim = await conn.fetchval(
-                    "SELECT 1 FROM stock_claims WHERE product_id=$1 AND user_id=$2",
-                    product_id,
-                    user_id,
-                )
-                if previous_claim:
-                    return "already_claimed", dict(product)
-                if user["points"] < product["points_required"]:
-                    return "insufficient_points", dict(product)
                 item = await conn.fetchrow(
                     "SELECT * FROM stock_items WHERE product_id=$1 AND status='available' "
                     "ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1",
@@ -706,6 +698,8 @@ class Database:
                 )
                 if not item and not legacy_stock:
                     return "out_of_stock", dict(product)
+                if user["points"] < product["points_required"]:
+                    return "insufficient_points", dict(product)
                 await conn.execute(
                     "UPDATE users SET points=points-$1 WHERE telegram_id=$2",
                     product["points_required"],
