@@ -151,6 +151,61 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 """
 
+LEGACY_ID_MIGRATION = """
+DO $body$
+DECLARE
+  r RECORD;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public'
+      AND (table_name, column_name) IN (
+        VALUES ('users','telegram_id'), ('referrals','referrer_id'),
+               ('referrals','referred_id'), ('referrals','referred_user_id'),
+               ('force_channels','chat_id'), ('reward_assignments','user_id'),
+               ('stock_claims','user_id'), ('admins','telegram_id'),
+               ('broadcasts','sender_id')
+      )
+      AND data_type IN ('smallint','integer')
+  ) THEN
+    CREATE TEMP TABLE bot_fk_backup (
+      schema_name TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      constraint_name TEXT NOT NULL,
+      constraint_definition TEXT NOT NULL
+    ) ON COMMIT DROP;
+    INSERT INTO bot_fk_backup (schema_name, table_name, constraint_name, constraint_definition)
+    SELECT n.nspname, cls.relname, c.conname, pg_get_constraintdef(c.oid)
+    FROM pg_constraint c
+    JOIN pg_class cls ON cls.oid=c.conrelid
+    JOIN pg_namespace n ON n.oid=cls.relnamespace
+    WHERE c.contype='f' AND n.nspname='public';
+    FOR r IN SELECT * FROM bot_fk_backup LOOP
+      EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', r.schema_name, r.table_name, r.constraint_name);
+    END LOOP;
+    FOR r IN
+      SELECT table_name, column_name
+      FROM information_schema.columns
+      WHERE table_schema='public'
+        AND (table_name, column_name) IN (
+          VALUES ('users','telegram_id'), ('referrals','referrer_id'),
+                 ('referrals','referred_id'), ('referrals','referred_user_id'),
+                 ('force_channels','chat_id'), ('reward_assignments','user_id'),
+                 ('stock_claims','user_id'), ('admins','telegram_id'),
+                 ('broadcasts','sender_id')
+        )
+        AND data_type IN ('smallint','integer')
+    LOOP
+      EXECUTE format('ALTER TABLE public.%I ALTER COLUMN %I TYPE BIGINT USING %I::BIGINT', r.table_name, r.column_name, r.column_name);
+    END LOOP;
+    FOR r IN SELECT * FROM bot_fk_backup LOOP
+      EXECUTE format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s', r.schema_name, r.table_name, r.constraint_name, r.constraint_definition);
+    END LOOP;
+  END IF;
+END
+$body$;
+"""
+
 DEFAULT_CONTENT = {
     "welcome": "Welcome to <b>{bot_name}</b>.\n\nInvite friends, complete milestones, and unlock Telegram rewards.",
     "maintenance": "We are making a few improvements. Please check back shortly.",
@@ -193,6 +248,7 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute(LEGACY_ID_MIGRATION)
 
             # Existing Railway databases may have an older audit_logs table.
             # Add the columns used by the current bot without deleting old data.
