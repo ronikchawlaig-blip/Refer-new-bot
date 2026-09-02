@@ -24,7 +24,7 @@ from ui import (
 )
 
 log = logging.getLogger(__name__)
-SUPPORT_BOT_LINK = "https://t.me/Referrsupportt_bot"
+SUPPORT_BOT_LINK = "https://t.me/GrabSupportbot"
 
 
 def _history_body(history: list[dict[str, Any]]) -> str:
