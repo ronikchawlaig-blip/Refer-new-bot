@@ -460,34 +460,34 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
-          state_column = self._referral_state_column()
-          async with self._p().acquire() as conn:
-              async with conn.transaction():
-                  row = await conn.fetchrow(
-                      f"""
-                      SELECT
-                        COUNT(*)::int AS total_referrals,
-                        COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
-                        COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
-                      FROM referrals
-                      WHERE referrer_id=$1
-                      """,
-                      referrer_id,
-                  )
-          return dict(row)
+        state_column = self._referral_state_column()
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    f"""
+                    SELECT
+                      COUNT(*)::int AS total_referrals,
+                      COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
+                      COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
+                    FROM referrals
+                    WHERE referrer_id=$1
+                    """,
+                    referrer_id,
+                )
+        return dict(row)
 
-      async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
-          row = await self._p().fetchrow(
-              "SELECT role, permissions FROM admins WHERE telegram_id=$1", user_id
-          )
-          if not row:
-              return False
-          if row["role"] == "owner" or not permission:
-              return True
-          permissions = row["permissions"] or {}
-          return bool(permissions.get(permission))
+    async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
+        row = await self._p().fetchrow(
+            "SELECT role, permissions FROM admins WHERE telegram_id=$1", user_id
+        )
+        if not row:
+            return False
+        if row["role"] == "owner" or not permission:
+            return True
+        permissions = row["permissions"] or {}
+        return bool(permissions.get(permission))
 
-        async def admin_role(self, user_id: int) -> str | None:
+    async def admin_role(self, user_id: int) -> str | None:
         return await self._p().fetchval("SELECT role FROM admins WHERE telegram_id=$1", user_id)
 
     async def get_setting(self, key: str, default: str = "") -> str:
