@@ -45,35 +45,39 @@ def _history_body(history: list[dict[str, Any]]) -> str:
 
 
 async def _is_subscribed(bot: Bot, channel: dict[str, Any], user_id: int) -> bool:
-    references: list[Any] = [channel["chat_id"]]
     username = str(channel.get("username") or "").strip()
+    references: list[Any] = []
     if username:
         references.append(username if username.startswith("@") else f"@{username}")
+    references.append(channel["chat_id"])
 
-    for index, chat_reference in enumerate(dict.fromkeys(references)):
+    seen: set[Any] = set()
+    for chat_reference in references:
+        if chat_reference in seen:
+            continue
+        seen.add(chat_reference)
         try:
             member = await bot.get_chat_member(chat_reference, user_id)
             status = getattr(member.status, "value", member.status)
             status = str(status).lower()
             if status in {"creator", "administrator", "member"}:
                 return True
-            if status == "restricted":
-                return bool(getattr(member, "is_member", False))
-            return False
+            if status == "restricted" and bool(getattr(member, "is_member", False)):
+                return True
+            log.info(
+                "User %s is not a member of channel %s (status=%s); trying next reference",
+                user_id,
+                chat_reference,
+                status,
+            )
         except Exception as exc:
-            if index + 1 < len(references):
-                log.warning(
-                    "Unable to verify channel %s by chat_id; retrying username: %s",
-                    channel["chat_id"],
-                    exc,
-                )
-            else:
-                log.warning(
-                    "Unable to verify channel %s (%s): %s",
-                    channel["chat_id"],
-                    username or "no username fallback",
-                    exc,
-                )
+            log.warning(
+                "Unable to verify user %s in channel %s using %s: %s",
+                user_id,
+                channel["chat_id"],
+                chat_reference,
+                exc,
+            )
     return False
 
 
