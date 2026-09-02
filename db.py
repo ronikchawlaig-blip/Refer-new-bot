@@ -248,6 +248,10 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            # Some legacy Railway databases kept referred_id/status but omitted
+            # the owner column. Add it without deleting or rewriting old rows.
+            await conn.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
+            await conn.execute(LEGACY_ID_MIGRATION)
             await conn.execute(LEGACY_ID_MIGRATION)
 
             # Existing Railway databases may have an older audit_logs table.
