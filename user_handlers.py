@@ -302,7 +302,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 return
             body = "\n\n".join(
                 f"<b>{escape(str(product['name']))}</b>\n"
-                f"Available: <b>{product['stock']}</b>\n"
+                f"Available: <b>{product['available_stock']}</b>\n"
                 f"Cost: <b>{product['points_required']} points</b>"
                 for product in products
             )
@@ -456,7 +456,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             return
         body = "\n\n".join(
             f"<b>{escape(str(product['name']))}</b>\n"
-            f"Available: <b>{product['stock']}</b>\n"
+            f"Available: <b>{product['available_stock']}</b>\n"
             f"Cost: <b>{product['points_required']} points</b>"
             for product in products
         )
@@ -533,7 +533,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         await callback.message.edit_text(
             screen(
                 escape(str(product["name"])),
-                f"Available stock: <b>{product['stock']}</b>\n"
+                f"Available stock: <b>{product['available_stock']}</b>\n"
                 f"Required points: <b>{product['points_required']}</b>\n"
                 f"Your points: <b>{user['points']}</b>\n\n"
                 f"{escape(str(product['text_content'] or 'Tap Claim now to redeem this product.'))}",

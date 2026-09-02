@@ -78,7 +78,7 @@ def stock_products_keyboard(products: list[dict]) -> InlineKeyboardMarkup:
         rows.append(
             [
                 InlineKeyboardButton(
-                    text=f"{name} · {product['points_required']} pts · {product['stock']} left",
+                    text=f"{name} · {product['points_required']} pts · {product['available_stock']} left",
                     callback_data=f"u:stock:{product['id']}",
                 )
             ]

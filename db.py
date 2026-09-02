@@ -81,9 +81,20 @@ CREATE TABLE IF NOT EXISTS stock_products (
   enabled BOOLEAN NOT NULL DEFAULT TRUE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS stock_items (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES stock_products(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'text',
+  text_content TEXT,
+  file_id TEXT,
+  status TEXT NOT NULL DEFAULT 'available'
+    CHECK (status IN ('available','claimed','failed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 CREATE TABLE IF NOT EXISTS stock_claims (
   id BIGSERIAL PRIMARY KEY,
   product_id BIGINT NOT NULL REFERENCES stock_products(id) ON DELETE RESTRICT,
+  item_id BIGINT REFERENCES stock_items(id) ON DELETE RESTRICT,
   user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   status TEXT NOT NULL DEFAULT 'reserved'
     CHECK (status IN ('reserved','delivered','failed')),
@@ -94,6 +105,7 @@ CREATE TABLE IF NOT EXISTS stock_claims (
   attempt_count INTEGER NOT NULL DEFAULT 0,
   UNIQUE (product_id, user_id)
 );
+ALTER TABLE stock_claims ADD COLUMN IF NOT EXISTS item_id BIGINT REFERENCES stock_items(id) ON DELETE RESTRICT;
 CREATE TABLE IF NOT EXISTS admins (
   telegram_id BIGINT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('owner','admin')),
@@ -407,7 +419,10 @@ class Database:
               (SELECT COUNT(*) FROM rewards WHERE status='delivered')::int delivered_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status='failed')::int failed_deliveries,
               (SELECT COUNT(*) FROM stock_products WHERE enabled)::int stock_products,
-              (SELECT COALESCE(SUM(stock),0) FROM stock_products WHERE enabled)::int stock_units,
+              (SELECT COALESCE(SUM(
+                p.stock + (SELECT COUNT(*) FROM stock_items si
+                           WHERE si.product_id=p.id AND si.status='available')
+              ),0) FROM stock_products p WHERE p.enabled)::int stock_units,
               (SELECT COUNT(*) FROM users WHERE banned)::int banned_users
             """
         )
@@ -562,13 +577,50 @@ class Database:
     async def list_stock_products(self, include_disabled: bool = False) -> list[dict[str, Any]]:
         where = "" if include_disabled else "WHERE enabled"
         rows = await self._p().fetch(
-            f"SELECT * FROM stock_products {where} ORDER BY enabled DESC, created_at DESC, id DESC"
+            f"""
+            SELECT p.*,
+              COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='available'
+              ),0) AS available_codes,
+              COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='claimed'
+              ),0) AS used_codes,
+              COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='failed'
+              ),0) AS failed_codes,
+              p.stock + COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='available'
+              ),0) AS available_stock
+            FROM stock_products p
+            {where}
+            ORDER BY enabled DESC, created_at DESC, id DESC
+            """
         )
         return [dict(row) for row in rows]
 
     async def get_stock_product(self, product_id: int) -> dict[str, Any] | None:
         row = await self._p().fetchrow(
-            "SELECT * FROM stock_products WHERE id=$1", product_id
+            """
+            SELECT p.*,
+              p.stock + COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='available'
+              ),0) AS available_stock,
+              COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='claimed'
+              ),0) AS used_codes,
+              COALESCE((
+                SELECT COUNT(*)::int FROM stock_items si
+                WHERE si.product_id=p.id AND si.status='failed'
+              ),0) AS failed_codes
+            FROM stock_products p WHERE p.id=$1
+            """,
+            product_id,
         )
         return dict(row) if row else None
 
@@ -576,18 +628,25 @@ class Database:
         self,
         name: str,
         points_required: int,
-        stock: int,
+    ) -> int:
+        return await self._p().fetchval(
+            "INSERT INTO stock_products "
+            "(name,points_required) VALUES ($1,$2) RETURNING id",
+            name[:120],
+            points_required,
+        )
+
+    async def add_stock_item(
+        self,
+        product_id: int,
         kind: str,
         text_content: str | None,
         file_id: str | None,
     ) -> int:
         return await self._p().fetchval(
-            "INSERT INTO stock_products "
-            "(name,points_required,stock,kind,text_content,file_id) "
-            "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
-            name[:120],
-            points_required,
-            stock,
+            "INSERT INTO stock_items (product_id,kind,text_content,file_id) "
+            "VALUES ($1,$2,$3,$4) RETURNING id",
+            product_id,
             kind,
             text_content,
             file_id,
@@ -633,27 +692,53 @@ class Database:
                 )
                 if previous_claim:
                     return "already_claimed", dict(product)
-                if product["stock"] <= 0:
-                    return "out_of_stock", dict(product)
                 if user["points"] < product["points_required"]:
                     return "insufficient_points", dict(product)
+                item = await conn.fetchrow(
+                    "SELECT * FROM stock_items WHERE product_id=$1 AND status='available' "
+                    "ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1",
+                    product_id,
+                )
+                legacy_stock = product["stock"] > 0 and (
+                    product["text_content"] or product["file_id"]
+                )
+                if not item and not legacy_stock:
+                    return "out_of_stock", dict(product)
                 await conn.execute(
                     "UPDATE users SET points=points-$1 WHERE telegram_id=$2",
                     product["points_required"],
                     user_id,
                 )
-                await conn.execute(
-                    "UPDATE stock_products SET stock=stock-1 WHERE id=$1", product_id
-                )
-                claim = await conn.fetchrow(
-                    "INSERT INTO stock_claims "
-                    "(product_id,user_id,status,points_spent) VALUES ($1,$2,'reserved',$3) "
-                    "RETURNING id,product_id,user_id,status,points_spent,claimed_at",
-                    product_id,
-                    user_id,
-                    product["points_required"],
-                )
+                if item:
+                    await conn.execute(
+                        "UPDATE stock_items SET status='claimed' WHERE id=$1", item["id"]
+                    )
+                    claim = await conn.fetchrow(
+                        "INSERT INTO stock_claims "
+                        "(product_id,item_id,user_id,status,points_spent) "
+                        "VALUES ($1,$2,$3,'reserved',$4) "
+                        "RETURNING id,product_id,item_id,user_id,status,points_spent,claimed_at",
+                        product_id,
+                        item["id"],
+                        user_id,
+                        product["points_required"],
+                    )
+                    reward = dict(item)
+                else:
+                    await conn.execute(
+                        "UPDATE stock_products SET stock=stock-1 WHERE id=$1", product_id
+                    )
+                    claim = await conn.fetchrow(
+                        "INSERT INTO stock_claims "
+                        "(product_id,user_id,status,points_spent) VALUES ($1,$2,'reserved',$3) "
+                        "RETURNING id,product_id,item_id,user_id,status,points_spent,claimed_at",
+                        product_id,
+                        user_id,
+                        product["points_required"],
+                    )
+                    reward = dict(product)
                 result = dict(product)
+                result.update(reward)
                 result.update(dict(claim))
                 result["remaining_points"] = user["points"] - product["points_required"]
                 return "claimed", result
@@ -669,6 +754,14 @@ class Database:
             status,
             delivered,
             error[:1000],
+            claim_id,
+            user_id,
+        )
+        await self._p().execute(
+            "UPDATE stock_items SET status=$1 WHERE id=("
+            "SELECT item_id FROM stock_claims WHERE id=$2 AND user_id=$3) "
+            "AND status='claimed'",
+            status,
             claim_id,
             user_id,
         )
