@@ -476,18 +476,18 @@ class Database:
                   )
           return dict(row)
 
-        async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
-        row = await self._p().fetchrow(
-            "SELECT role, permissions FROM admins WHERE telegram_id=$1", user_id
-        )
-        if not row:
-            return False
-        if row["role"] == "owner" or not permission:
-            return True
-        permissions = row["permissions"] or {}
-        return bool(permissions.get(permission))
+      async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
+          row = await self._p().fetchrow(
+              "SELECT role, permissions FROM admins WHERE telegram_id=$1", user_id
+          )
+          if not row:
+              return False
+          if row["role"] == "owner" or not permission:
+              return True
+          permissions = row["permissions"] or {}
+          return bool(permissions.get(permission))
 
-    async def admin_role(self, user_id: int) -> str | None:
+        async def admin_role(self, user_id: int) -> str | None:
         return await self._p().fetchval("SELECT role FROM admins WHERE telegram_id=$1", user_id)
 
     async def get_setting(self, key: str, default: str = "") -> str:
