@@ -32,11 +32,11 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='referrals' AND column_name='referred_id'
+    WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='referred_id'
   ) THEN
     IF EXISTS (
       SELECT 1 FROM information_schema.columns
-      WHERE table_schema='public' AND table_name='referrals' AND column_name='referred_user_id'
+      WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='referred_user_id'
     ) THEN
       ALTER TABLE referrals RENAME COLUMN referred_user_id TO referred_id;
     ELSE
@@ -48,11 +48,11 @@ DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_schema='public' AND table_name='referrals' AND column_name='state'
+    WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='state'
   ) THEN
     IF EXISTS (
       SELECT 1 FROM information_schema.columns
-      WHERE table_schema='public' AND table_name='referrals' AND column_name='status'
+      WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='status'
     ) THEN
       ALTER TABLE referrals RENAME COLUMN status TO state;
     ELSE
