@@ -206,6 +206,102 @@ END
 $body$;
 """
 
+LEGACY_USERS_MIGRATION = """
+DO $body$
+DECLARE
+  id_column TEXT;
+  username_column TEXT;
+  first_name_column TEXT;
+  points_column TEXT;
+  referral_count_column TEXT;
+  force_subscribed_column TEXT;
+  disclaimer_column TEXT;
+  verified_column TEXT;
+  banned_column TEXT;
+  joined_at_column TEXT;
+  username_expression TEXT;
+  first_name_expression TEXT;
+  points_expression TEXT;
+  referral_count_expression TEXT;
+  force_subscribed_expression TEXT;
+  disclaimer_expression TEXT;
+  verified_expression TEXT;
+  banned_expression TEXT;
+  joined_at_expression TEXT;
+BEGIN
+  IF to_regclass('public.bot_users') IS NULL THEN
+    RETURN;
+  END IF;
+
+  SELECT column_name INTO id_column
+  FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users'
+    AND column_name IN ('telegram_id','user_id','id')
+  ORDER BY CASE column_name WHEN 'telegram_id' THEN 1 WHEN 'user_id' THEN 2 ELSE 3 END
+  LIMIT 1;
+  IF id_column IS NULL THEN
+    RETURN;
+  END IF;
+
+  SELECT column_name INTO username_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('username','user_name')
+  ORDER BY CASE column_name WHEN 'username' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO first_name_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('first_name','name')
+  ORDER BY CASE column_name WHEN 'first_name' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO points_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('points','coins','balance')
+  ORDER BY CASE column_name WHEN 'points' THEN 1 WHEN 'coins' THEN 2 ELSE 3 END LIMIT 1;
+  SELECT column_name INTO referral_count_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('referral_count','referrals_count','invite_count')
+  ORDER BY CASE column_name WHEN 'referral_count' THEN 1 WHEN 'referrals_count' THEN 2 ELSE 3 END LIMIT 1;
+  SELECT column_name INTO force_subscribed_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('force_subscribed','subscribed')
+  ORDER BY CASE column_name WHEN 'force_subscribed' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO disclaimer_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('disclaimer_accepted','accepted_disclaimer')
+  ORDER BY CASE column_name WHEN 'disclaimer_accepted' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO verified_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('is_verified','verified')
+  ORDER BY CASE column_name WHEN 'is_verified' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO banned_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('banned','is_banned')
+  ORDER BY CASE column_name WHEN 'banned' THEN 1 ELSE 2 END LIMIT 1;
+  SELECT column_name INTO joined_at_column FROM information_schema.columns
+  WHERE table_schema='public' AND table_name='bot_users' AND column_name IN ('joined_at','created_at')
+  ORDER BY CASE column_name WHEN 'joined_at' THEN 1 ELSE 2 END LIMIT 1;
+
+  username_expression := CASE WHEN username_column IS NULL THEN quote_literal('') ELSE format('COALESCE(bu.%I::text, %L)', username_column, '') END;
+  first_name_expression := CASE WHEN first_name_column IS NULL THEN quote_literal('') ELSE format('COALESCE(bu.%I::text, %L)', first_name_column, '') END;
+  points_expression := CASE WHEN points_column IS NULL THEN '0' ELSE format('GREATEST(COALESCE(bu.%I::bigint, 0), 0)::integer', points_column) END;
+  referral_count_expression := CASE WHEN referral_count_column IS NULL THEN '0' ELSE format('GREATEST(COALESCE(bu.%I::bigint, 0), 0)::integer', referral_count_column) END;
+  force_subscribed_expression := CASE WHEN force_subscribed_column IS NULL THEN 'FALSE' ELSE format('COALESCE(bu.%I::boolean, FALSE)', force_subscribed_column) END;
+  disclaimer_expression := CASE WHEN disclaimer_column IS NULL THEN 'FALSE' ELSE format('COALESCE(bu.%I::boolean, FALSE)', disclaimer_column) END;
+  verified_expression := CASE WHEN verified_column IS NULL THEN 'FALSE' ELSE format('COALESCE(bu.%I::boolean, FALSE)', verified_column) END;
+  banned_expression := CASE WHEN banned_column IS NULL THEN 'FALSE' ELSE format('COALESCE(bu.%I::boolean, FALSE)', banned_column) END;
+  joined_at_expression := CASE WHEN joined_at_column IS NULL THEN 'NOW()' ELSE format('COALESCE(bu.%I::timestamptz, NOW())', joined_at_column) END;
+
+  EXECUTE format(
+    'INSERT INTO users (telegram_id, username, first_name, joined_at, points, referral_count, force_subscribed, disclaimer_accepted, is_verified, banned)
+     SELECT bu.%I::bigint, %s, %s, %s, %s, %s, %s, %s, %s, %s
+     FROM bot_users bu
+     WHERE bu.%I IS NOT NULL
+     ON CONFLICT (telegram_id) DO UPDATE SET
+       username = CASE WHEN users.username = %L THEN EXCLUDED.username ELSE users.username END,
+       first_name = CASE WHEN users.first_name = %L THEN EXCLUDED.first_name ELSE users.first_name END,
+       joined_at = LEAST(users.joined_at, EXCLUDED.joined_at),
+       points = GREATEST(users.points, EXCLUDED.points),
+       referral_count = GREATEST(users.referral_count, EXCLUDED.referral_count),
+       force_subscribed = users.force_subscribed OR EXCLUDED.force_subscribed,
+       disclaimer_accepted = users.disclaimer_accepted OR EXCLUDED.disclaimer_accepted,
+       is_verified = users.is_verified OR EXCLUDED.is_verified,
+       banned = users.banned OR EXCLUDED.banned',
+    id_column, username_expression, first_name_expression, joined_at_expression, points_expression, referral_count_expression, force_subscribed_expression, disclaimer_expression, verified_expression, banned_expression, id_column, '', ''
+  );
+END
+$body$;
+"""
+
 DEFAULT_CONTENT = {
     "welcome": "Welcome to <b>{bot_name}</b>.\n\nInvite friends, complete milestones, and unlock Telegram rewards.",
     "maintenance": "We are making a few improvements. Please check back shortly.",
@@ -250,6 +346,7 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute(LEGACY_USERS_MIGRATION)
             # Some legacy Railway databases kept referred_id/status but omitted
             # the owner column. Add it without deleting or rewriting old rows.
             await conn.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
