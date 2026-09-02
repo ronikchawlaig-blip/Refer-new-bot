@@ -236,6 +236,7 @@ class Database:
         self.dsn = dsn
         self.pool: asyncpg.Pool | None = None
         self.referral_owner_column = "referrer_id"
+        self.referral_has_legacy_owner = False
         self.referral_user_column = "referred_user_id"
         self.referral_state_column = "status"
 
@@ -253,6 +254,21 @@ class Database:
             # the owner column. Add it without deleting or rewriting old rows.
             await conn.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
             await conn.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referred_id BIGINT")
+            # The old inviter column can point at the old bot_users table and be NOT NULL.
+            # Keep it for historical reads, but do not force new referrals through it.
+            await conn.execute("""
+                DO $migration$
+                BEGIN
+                  IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema='public' AND table_name='referrals'
+                      AND column_name='inviter_user_id'
+                  ) THEN
+                    ALTER TABLE referrals ALTER COLUMN inviter_user_id DROP NOT NULL;
+                  END IF;
+                END
+                $migration$;
+            """)
             await conn.execute(LEGACY_ID_MIGRATION)
 
             # Existing Railway databases may have an older audit_logs table.
@@ -273,15 +289,20 @@ class Database:
                     WHEN EXISTS (
                       SELECT 1 FROM pg_attribute
                       WHERE attrelid=to_regclass('referrals')
-                        AND attname='inviter_user_id' AND NOT attisdropped
-                    ) THEN 'inviter_user_id'
+                        AND attname='referrer_id' AND NOT attisdropped
+                    ) THEN 'referrer_id'
                     WHEN EXISTS (
                       SELECT 1 FROM pg_attribute
                       WHERE attrelid=to_regclass('referrals')
-                        AND attname='referrer_id' AND NOT attisdropped
-                    ) THEN 'referrer_id'
+                        AND attname='inviter_user_id' AND NOT attisdropped
+                    ) THEN 'inviter_user_id'
                     ELSE NULL
                   END AS owner_column,
+                  EXISTS (
+                    SELECT 1 FROM pg_attribute
+                    WHERE attrelid=to_regclass('referrals')
+                      AND attname='inviter_user_id' AND NOT attisdropped
+                  ) AS has_legacy_owner,
                   CASE
                     WHEN EXISTS (
                       SELECT 1 FROM pg_attribute
@@ -322,10 +343,11 @@ class Database:
             if referral_columns["state_column"] not in {"state", "status"}:
                 raise RuntimeError("The referrals table has no state/status column")
             self.referral_owner_column = referral_columns["owner_column"]
+            self.referral_has_legacy_owner = bool(referral_columns["has_legacy_owner"])
             self.referral_user_column = referral_columns["user_column"]
             self.referral_state_column = referral_columns["state_column"]
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER NOT NULL DEFAULT 0")
-            owner_column = self._referral_owner_column()
+            owner_expression = self._referral_owner_expression()
             state_column = self._referral_state_column()
             await conn.execute(
                 f"""
@@ -333,7 +355,7 @@ class Database:
                 SET referral_count = (
                     SELECT COUNT(*)::int
                     FROM referrals AS r
-                    WHERE r.{owner_column} = u.telegram_id
+                    WHERE {owner_expression} = u.telegram_id
                       AND r.{state_column} = 'completed'
                 )
                 """
@@ -379,6 +401,12 @@ class Database:
         if self.referral_owner_column not in {"referrer_id", "inviter_user_id"}:
             raise RuntimeError("Unsupported referrals owner column")
         return self.referral_owner_column
+
+    def _referral_owner_expression(self) -> str:
+        owner_column = self._referral_owner_column()
+        if owner_column == "referrer_id" and self.referral_has_legacy_owner:
+            return "COALESCE(referrer_id, inviter_user_id)"
+        return owner_column
 
     def _referral_user_column(self) -> str:
         if self.referral_user_column not in {"referred_id", "referred_user_id", "invited_user_id"}:
@@ -454,7 +482,7 @@ class Database:
                                 referral = await conn.fetchrow(
                                     f"INSERT INTO referrals ({owner_column}, {user_column}, {state_column}) "
                                     f"VALUES ($1,$2,$3) ON CONFLICT ({user_column}) DO NOTHING "
-                                    f"RETURNING {owner_column}",
+                                    f"RETURNING {owner_expression} AS referrer_id",
                                     referrer_id,
                                     telegram_id,
                                     referral_state,
@@ -503,7 +531,7 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
-        owner_column = self._referral_owner_column()
+        owner_expression = self._referral_owner_expression()
         state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
@@ -514,7 +542,7 @@ class Database:
                       COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
                       COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
                     FROM referrals
-                    WHERE {owner_column}=$1
+                    WHERE {owner_expression}=$1
                     """,
                     referrer_id,
                 )
@@ -651,7 +679,7 @@ class Database:
                 )
 
     async def complete_gate(self, user_id: int) -> int | None:
-        owner_column = self._referral_owner_column()
+        owner_expression = self._referral_owner_expression()
         user_column = self._referral_user_column()
         state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
@@ -673,9 +701,9 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET referral_count=referral_count+1, points=points+1 "
                     "WHERE telegram_id=$1",
-                    row[owner_column],
+                    row["referrer_id"],
                 )
-                return row[owner_column]
+                return row["referrer_id"]
     async def dashboard(self) -> dict[str, int]:
         try:
             row = await self._p().fetchrow(
@@ -1114,12 +1142,12 @@ class Database:
                     "UPDATE users SET referral_count=0, points=0, is_verified=FALSE WHERE telegram_id=$1",
                     user_id,
                 )
-                owner_column = self._referral_owner_column()
+                owner_expression = self._referral_owner_expression()
                 user_column = self._referral_user_column()
                 state_column = self._referral_state_column()
                 await conn.execute(
                     f"UPDATE referrals SET {state_column}='invalid' "
-                    f"WHERE {owner_column}=$1 OR {user_column}=$1",
+                    f"WHERE {owner_expression}=$1 OR {user_column}=$1",
                     user_id,
                 )
 
