@@ -293,32 +293,34 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         elif message.text == "👥 Refer & Earn":
             status = await message.answer("⠋ Loading referral data…")
 
-            async def load_referral_data() -> tuple[dict[str, Any], str, int | None]:
+            async def load_referral_data() -> tuple[dict[str, Any], dict[str, int], str, int | None]:
                 loaded_user = await db.get_user(message.from_user.id)
+                stats = await db.referral_stats(message.from_user.id)
                 bot_username = (await bot.get_me()).username or ""
                 target_row = await db._p().fetchrow(
                     "SELECT required_referrals FROM milestones WHERE enabled AND required_referrals > $1 "
                     "ORDER BY required_referrals LIMIT 1",
-                    loaded_user["referral_count"],
+                    stats["valid_referrals"],
                 )
-                return loaded_user, bot_username, (
+                return loaded_user, stats, bot_username, (
                     target_row["required_referrals"] if target_row else None
                 )
 
-            user, bot_username, target = await animated(
+            user, stats, bot_username, target = await animated(
                 status,
                 load_referral_data,
                 "Loading referral data",
                 finish=False,
             )
             link = f"https://t.me/{bot_username}?start=ref_{message.from_user.id}"
-            next_target = target if target is not None else user["referral_count"]
-            remaining = max(0, next_target - user["referral_count"])
+            successful = stats["valid_referrals"]
+            next_target = str(target) if target is not None else "Not set"
+            remaining = str(max(0, target - successful)) if target is not None else "—"
             await status.edit_text(
                 screen(
                     "Refer & Earn",
                     f"Your personal link:\n<code>{link}</code>\n\n"
-                    f"Successful referrals: <b>{user['referral_count']}</b>\n"
+                    f"Successful referrals: <b>{successful}</b>\n"
                     f"Next reward target: <b>{next_target}</b>\n"
                     f"Remaining: <b>{remaining}</b>",
                 )
