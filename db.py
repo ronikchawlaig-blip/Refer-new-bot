@@ -457,11 +457,20 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET disclaimer_accepted=TRUE WHERE telegram_id=$1", user_id
                 )
-                await conn.execute(
-                    "UPDATE referrals SET status='disclaimer_accepted' "
-                    "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
-                    user_id,
-                )
+                try:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "UPDATE referrals SET status='disclaimer_accepted' "
+                            "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
+                            user_id,
+                        )
+                except asyncpg.exceptions.UndefinedColumnError:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "UPDATE referrals SET state='disclaimer_accepted' "
+                            "WHERE referred_id=$1 AND state IN ('pending','subscribed')",
+                            user_id,
+                        )
 
     async def complete_gate(self, user_id: int) -> int | None:
         async with self._p().acquire() as conn:
