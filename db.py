@@ -298,6 +298,19 @@ class Database:
                 raise RuntimeError("The referrals table has no state/status column")
             self.referral_user_column = referral_columns["user_column"]
             self.referral_state_column = referral_columns["state_column"]
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INTEGER NOT NULL DEFAULT 0")
+            state_column = self._referral_state_column()
+            await conn.execute(
+                f"""
+                UPDATE users AS u
+                SET referral_count = (
+                    SELECT COUNT(*)::int
+                    FROM referrals AS r
+                    WHERE r.referrer_id = u.telegram_id
+                      AND r.{state_column} = 'completed'
+                )
+                """
+            )
             await conn.execute(
                 "UPDATE broadcasts SET status='queued' WHERE status='processing'"
             )
@@ -388,7 +401,30 @@ class Database:
                         username,
                         first_name,
                     )
-                    return dict(existing), None
+                    created_referrer_id = None
+                    # A user may have opened the bot before clicking a referral link.
+                    # Attribute the link only while their access is still unverified,
+                    # and never replace an existing referral attribution.
+                    if referrer_id and referrer_id != telegram_id and not existing["is_verified"]:
+                        referrer_exists = await conn.fetchval(
+                            "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
+                        )
+                        if referrer_exists:
+                            user_column = self._referral_user_column()
+                            state_column = self._referral_state_column()
+                            referral = await conn.fetchrow(
+                                f"INSERT INTO referrals (referrer_id, {user_column}, {state_column}) "
+                                f"VALUES ($1,$2,'pending') ON CONFLICT ({user_column}) DO NOTHING "
+                                "RETURNING referrer_id",
+                                referrer_id,
+                                telegram_id,
+                            )
+                            if referral:
+                                created_referrer_id = referral["referrer_id"]
+                    return (
+                        dict(await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", telegram_id)),
+                        created_referrer_id,
+                    )
                 await conn.execute(
                     "INSERT INTO users (telegram_id, username, first_name) VALUES ($1,$2,$3)",
                     telegram_id,
@@ -416,7 +452,6 @@ class Database:
                     dict(await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", telegram_id)),
                     created_referrer_id,
                 )
-
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
         row = await self._p().fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
         return dict(row) if row else None
