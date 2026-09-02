@@ -744,6 +744,12 @@ class Database:
         )
         return [dict(row) for row in rows]
 
+    async def invalidate_verification(self, user_id: int) -> None:
+        await self._p().execute(
+            "UPDATE users SET force_subscribed=FALSE, is_verified=FALSE WHERE telegram_id=$1",
+            user_id,
+        )
+
     async def list_channels(self) -> list[dict[str, Any]]:
         rows = await self._p().fetch("SELECT * FROM force_channels ORDER BY sort_order,id")
         return [dict(row) for row in rows]
