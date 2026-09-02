@@ -192,7 +192,10 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             referrer if referral_enabled else None,
         )
         if created_referrer_id:
-            await _notify_new_referral(bot, created_referrer_id, registered_user)
+            if registered_user.get("is_verified"):
+                await _notify_referral_success(bot, db, created_referrer_id, registered_user)
+            else:
+                await _notify_new_referral(bot, created_referrer_id, registered_user)
         if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
             message.from_user.id
         ):
