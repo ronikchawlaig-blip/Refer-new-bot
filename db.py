@@ -532,7 +532,8 @@ class Database:
                 return None
 
     async def dashboard(self) -> dict[str, int]:
-        row = await self._p().fetchrow(
+        try:
+            row = await self._p().fetchrow(
             """
             SELECT
               (SELECT COUNT(*) FROM users)::int total_users,
@@ -551,7 +552,28 @@ class Database:
               ),0) FROM stock_products p WHERE p.enabled)::int stock_units,
               (SELECT COUNT(*) FROM users WHERE banned)::int banned_users
             """
-        )
+            )
+        except asyncpg.exceptions.UndefinedColumnError:
+            row = await self._p().fetchrow(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM users)::int total_users,
+              (SELECT COUNT(*) FROM users WHERE joined_at >= NOW()-INTERVAL '24 hours')::int new_users,
+              (SELECT COUNT(*) FROM users WHERE is_verified)::int verified_users,
+              (SELECT COUNT(*) FROM referrals WHERE state='completed')::int completed_referrals,
+              (SELECT COUNT(*) FROM referrals WHERE state IN ('pending','subscribed','disclaimer_accepted'))::int pending_referrals,
+              (SELECT COUNT(*) FROM rewards WHERE status='available')::int available_rewards,
+              (SELECT COUNT(*) FROM rewards WHERE status IN ('assigned','delivered'))::int assigned_rewards,
+              (SELECT COUNT(*) FROM rewards WHERE status='delivered')::int delivered_rewards,
+              (SELECT COUNT(*) FROM rewards WHERE status='failed')::int failed_deliveries,
+              (SELECT COUNT(*) FROM stock_products WHERE enabled)::int stock_products,
+              (SELECT COALESCE(SUM(
+                p.stock + (SELECT COUNT(*) FROM stock_items si
+                           WHERE si.product_id=p.id AND si.status='available')
+              ),0) FROM stock_products p WHERE p.enabled)::int stock_units,
+              (SELECT COUNT(*) FROM users WHERE banned)::int banned_users
+            """
+            )
         return dict(row)
 
     async def create_milestone(self, required: int, name: str) -> None:
