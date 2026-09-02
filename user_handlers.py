@@ -56,33 +56,34 @@ async def _is_subscribed(bot: Bot, channel: dict[str, Any], user_id: int) -> boo
 
 
 async def _find_missing_channels(
-      bot: Bot, db: Database, user_id: int
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-      channels = await db.active_channels()
-      subscribed = await asyncio.gather(
-          *(_is_subscribed(bot, channel, user_id) for channel in channels)
-      )
-      missing = [channel for channel, is_member in zip(channels, subscribed) if not is_member]
-      return channels, missing
+    bot: Bot, db: Database, user_id: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    channels = await db.active_channels()
+    subscribed = await asyncio.gather(
+        *(_is_subscribed(bot, channel, user_id) for channel in channels)
+    )
+    missing = [channel for channel, is_member in zip(channels, subscribed) if not is_member]
+    return channels, missing
+
 
 async def _notify_new_referral(
-      bot: Bot,
-      referrer_id: int,
-      referred_user: dict[str, Any],
-    ) -> None:
-      try:
-          await bot.send_message(
-              referrer_id,
-              "🔔 <b>𝗡𝗘𝗪 𝗥𝗘𝗙𝗘𝗥𝗥𝗔𝗟!</b>\n\n"
-              f"👤 <b>{escape(str(referred_user.get('first_name') or 'Someone'))}</b> "
-              "joined using your link! ⏳\n\n"
-              "Waiting for them to join the required channels and accept the disclaimer.",
-          )
-      except Exception:
-          log.exception("Unable to notify referrer %s about a new referral", referrer_id)
+    bot: Bot,
+    referrer_id: int,
+    referred_user: dict[str, Any],
+) -> None:
+    try:
+        await bot.send_message(
+            referrer_id,
+            "🔔 <b>𝗡𝗘𝗪 𝗥𝗘𝗙𝗘𝗥𝗥𝗔𝗟!</b>\n\n"
+            f"👤 <b>{escape(str(referred_user.get('first_name') or 'Someone'))}</b> "
+            "joined using your link! ⏳\n\n"
+            "Waiting for them to join the required channels and accept the disclaimer.",
+        )
+    except Exception:
+        log.exception("Unable to notify referrer %s about a new referral", referrer_id)
 
 
-    async def _notify_referral_success(
+async def _notify_referral_success(
     bot: Bot,
     db: Database,
     referrer_id: int,
@@ -191,10 +192,10 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             referrer if referral_enabled else None,
         )
         if created_referrer_id:
-              asyncio.create_task(
-                  _notify_new_referral(bot, created_referrer_id, registered_user)
-              )
-            if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
+            asyncio.create_task(
+                _notify_new_referral(bot, created_referrer_id, registered_user)
+            )
+        if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
             message.from_user.id
         ):
             content = await db.get_content("maintenance")
