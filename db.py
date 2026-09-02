@@ -252,7 +252,6 @@ class Database:
             # the owner column. Add it without deleting or rewriting old rows.
             await conn.execute("ALTER TABLE referrals ADD COLUMN IF NOT EXISTS referrer_id BIGINT")
             await conn.execute(LEGACY_ID_MIGRATION)
-            await conn.execute(LEGACY_ID_MIGRATION)
 
             # Existing Railway databases may have an older audit_logs table.
             # Add the columns used by the current bot without deleting old data.
@@ -461,37 +460,23 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
-        try:
-            async with self._p().acquire() as conn:
-                async with conn.transaction():
-                    row = await conn.fetchrow(
-                        """
-                        SELECT
-                          COUNT(*)::int AS total_referrals,
-                          COUNT(*) FILTER (WHERE status='completed')::int AS valid_referrals,
-                          COUNT(*) FILTER (WHERE status<>'completed')::int AS invalid_referrals
-                        FROM referrals
-                        WHERE referrer_id=$1
-                        """,
-                        referrer_id,
-                    )
-        except asyncpg.exceptions.UndefinedColumnError:
-            async with self._p().acquire() as conn:
-                async with conn.transaction():
-                    row = await conn.fetchrow(
-                        """
-                        SELECT
-                          COUNT(*)::int AS total_referrals,
-                          COUNT(*) FILTER (WHERE state='completed')::int AS valid_referrals,
-                          COUNT(*) FILTER (WHERE state<>'completed')::int AS invalid_referrals
-                        FROM referrals
-                        WHERE referrer_id=$1
-                        """,
-                        referrer_id,
-                    )
-        return dict(row)
+          state_column = self._referral_state_column()
+          async with self._p().acquire() as conn:
+              async with conn.transaction():
+                  row = await conn.fetchrow(
+                      f"""
+                      SELECT
+                        COUNT(*)::int AS total_referrals,
+                        COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
+                        COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
+                      FROM referrals
+                      WHERE referrer_id=$1
+                      """,
+                      referrer_id,
+                  )
+          return dict(row)
 
-    async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
+        async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
         row = await self._p().fetchrow(
             "SELECT role, permissions FROM admins WHERE telegram_id=$1", user_id
         )
