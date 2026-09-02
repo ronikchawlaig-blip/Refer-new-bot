@@ -260,8 +260,8 @@ class Database:
                 ("referrals_enabled", "true"),
                 ("maintenance_enabled", "false"),
                 ("disclaimer_enabled", "true"),
-                ("support_link", "https://t.me/Referrsupportt_bot"),
-                ("support_username", "@Referrsupportt_bot"),
+                ("support_link", "https://t.me/GrabSupportbot"),
+                ("support_username", "@GrabSupportbot"),
                 ("support_button_text", "💬 Support"),
             ):
                 await conn.execute(
