@@ -518,42 +518,41 @@ class Database:
                 )
 
     async def complete_gate(self, user_id: int) -> int | None:
-          user_column = self._referral_user_column()
-          state_column = self._referral_state_column()
-          async with self._p().acquire() as conn:
-              async with conn.transaction():
-                  await conn.execute(
-                      "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
-                  )
-                  try:
-                      # Keep referral completion isolated from user verification. Older
-                      # Railway databases may still have a legacy referral schema.
-                      async with conn.transaction():
-                          row = await conn.fetchrow(
-                              f"UPDATE referrals SET {state_column}='completed' "
-                              f"WHERE {user_column}=$1 AND {state_column} IN "
-                              "('pending','subscribed','disclaimer_accepted') "
-                              "RETURNING referrer_id",
-                              user_id,
-                          )
-                  except asyncpg.exceptions.UndefinedColumnError as error:
-                      log.warning(
-                          "Referral completion skipped for user %s because the legacy schema "
-                          "is missing a column: %s",
-                          user_id,
-                          error,
-                      )
-                      return None
-                  if row:
-                      await conn.execute(
-                          "UPDATE users SET referral_count=referral_count+1, points=points+1 "
-                          "WHERE telegram_id=$1",
-                          row["referrer_id"],
-                      )
-                      return row["referrer_id"]
-                  return None
-
-        async def dashboard(self) -> dict[str, int]:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
+                )
+                try:
+                    # Keep referral completion isolated from user verification. Older
+                    # Railway databases may still have a legacy referral schema.
+                    async with conn.transaction():
+                        row = await conn.fetchrow(
+                            f"UPDATE referrals SET {state_column}='completed' "
+                            f"WHERE {user_column}=$1 AND {state_column} IN "
+                            "('pending','subscribed','disclaimer_accepted') "
+                            "RETURNING referrer_id",
+                            user_id,
+                        )
+                except asyncpg.exceptions.UndefinedColumnError as error:
+                    log.warning(
+                        "Referral completion skipped for user %s because the legacy schema "
+                        "is missing a column: %s",
+                        user_id,
+                        error,
+                    )
+                    return None
+                if row:
+                    await conn.execute(
+                        "UPDATE users SET referral_count=referral_count+1, points=points+1 "
+                        "WHERE telegram_id=$1",
+                        row["referrer_id"],
+                    )
+                    return row["referrer_id"]
+                return None
+    async def dashboard(self) -> dict[str, int]:
         try:
             row = await self._p().fetchrow(
             """
