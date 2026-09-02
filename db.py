@@ -224,7 +224,7 @@ class Database:
 
     async def register_user(
         self, telegram_id: int, username: str | None, first_name: str, referrer_id: int | None
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], int | None]:
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 existing = await conn.fetchrow(
@@ -237,31 +237,50 @@ class Database:
                         username,
                         first_name,
                     )
-                    return dict(existing)
+                    return dict(existing), None
                 await conn.execute(
                     "INSERT INTO users (telegram_id, username, first_name) VALUES ($1,$2,$3)",
                     telegram_id,
                     username,
                     first_name,
                 )
+                created_referrer_id = None
                 if referrer_id and referrer_id != telegram_id:
                     referrer_exists = await conn.fetchval(
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
-                        await conn.execute(
+                        referral = await conn.fetchrow(
                             "INSERT INTO referrals (referrer_id, referred_id, state) "
-                            "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING",
+                            "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
+                            "RETURNING referrer_id",
                             referrer_id,
                             telegram_id,
                         )
-                return dict(
-                    await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", telegram_id)
+                        if referral:
+                            created_referrer_id = referral["referrer_id"]
+                return (
+                    dict(await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", telegram_id)),
+                    created_referrer_id,
                 )
 
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
         row = await self._p().fetchrow("SELECT * FROM users WHERE telegram_id=$1", user_id)
         return dict(row) if row else None
+
+    async def referral_stats(self, referrer_id: int) -> dict[str, int]:
+        row = await self._p().fetchrow(
+            """
+            SELECT
+              COUNT(*)::int AS total_referrals,
+              COUNT(*) FILTER (WHERE state='completed')::int AS valid_referrals,
+              COUNT(*) FILTER (WHERE state<>'completed')::int AS invalid_referrals
+            FROM referrals
+            WHERE referrer_id=$1
+            """,
+            referrer_id,
+        )
+        return dict(row)
 
     async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
         row = await self._p().fetchrow(

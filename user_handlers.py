@@ -65,11 +65,36 @@ async def _find_missing_channels(
     return channels, missing
 
 
-async def _activate_user(user_id: int, db: Database) -> tuple[str, bool]:
+async def _notify_referral_success(
+    bot: Bot,
+    db: Database,
+    referrer_id: int,
+    referred_user: dict[str, Any],
+) -> None:
+    try:
+        referrer = await db.get_user(referrer_id)
+        stats = await db.referral_stats(referrer_id)
+        if not referrer:
+            return
+        await bot.send_message(
+            referrer_id,
+            "🔔 <b>𝗥𝗘𝗙𝗘𝗥𝗥𝗔𝗟 𝗦𝗨𝗖𝗖𝗘𝗦𝗦!</b>\n\n"
+            "You’ve got a new valid referral! 🎉\n\n"
+            f"👤 Name: <b>{escape(str(referred_user.get('first_name') or 'Your referral'))}</b>\n\n"
+            f"👥 Total: <b>{stats['total_referrals']}</b>\n"
+            f"✅ Valid: <b>{stats['valid_referrals']}</b>\n"
+            f"❌ Non-Valid: <b>{stats['invalid_referrals']}</b>\n\n"
+            "🎁 Keep going — your next reward is getting closer!",
+        )
+    except Exception:
+        log.exception("Unable to notify referrer %s about a successful referral", referrer_id)
+
+
+async def _activate_user(user_id: int, db: Database) -> tuple[str, bool, int | None]:
     await db.accept_disclaimer(user_id)
-    await db.complete_gate(user_id)
+    referrer_id = await db.complete_gate(user_id)
     support_text = await db.get_setting("support_button_text", "💬 Support")
-    return support_text, await db.is_admin(user_id)
+    return support_text, await db.is_admin(user_id), referrer_id
 
 
 async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, Any]) -> bool:
@@ -98,20 +123,7 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         return False
     referrer_id = await db.complete_gate(user["telegram_id"])
     if referrer_id:
-        try:
-            referrer = await db.get_user(referrer_id)
-            if referrer:
-                await bot.send_message(
-                    referrer_id,
-                    "🎉 <b>Referral successful!</b>\n\n"
-                    f"<b>{escape(str(user.get('first_name') or 'Your referral'))}</b> "
-                    "has completed verification.\n"
-                    "You earned <b>1 point</b>.\n"
-                    f"Successful referrals: <b>{referrer['referral_count']}</b>\n"
-                    f"Your points: <b>{referrer['points']}</b>",
-                )
-        except Exception:
-            log.exception("Unable to notify referrer %s", referrer_id)
+        await _notify_referral_success(bot, db, referrer_id, user)
     await status.edit_text("✓ Access verified.")
     return True
 
@@ -155,12 +167,23 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             except ValueError:
                 referrer = None
         referral_enabled = await db.get_setting("referrals_enabled", "true") == "true"
-        await db.register_user(
+        registered_user, created_referrer_id = await db.register_user(
             message.from_user.id,
             message.from_user.username,
             message.from_user.first_name,
             referrer if referral_enabled else None,
         )
+        if created_referrer_id:
+            try:
+                await bot.send_message(
+                    created_referrer_id,
+                    "🔔 <b>𝗡𝗘𝗪 𝗥𝗘𝗙𝗘𝗥𝗥𝗔𝗟!</b>\n\n"
+                    f"👤 <b>{escape(str(registered_user.get('first_name') or 'Someone'))}</b> "
+                    "joined using your link! ⏳\n\n"
+                    "Waiting for them to join the required channels and accept the disclaimer.",
+                )
+            except Exception:
+                log.exception("Unable to notify referrer %s about a new referral", created_referrer_id)
         if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
             message.from_user.id
         ):
@@ -214,13 +237,15 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 reply_markup=gate_keyboard(missing),
             )
             return
-        support_text, is_admin = await animated(
+        support_text, is_admin, referrer_id = await animated(
             callback.message,
             lambda: _activate_user(callback.from_user.id, db),
             "Activating access",
             progress=True,
             finish=False,
         )
+        if referrer_id:
+            await _notify_referral_success(bot, db, referrer_id, user)
         await callback.message.edit_text(
             f"✓ Accepted. Your access is now active.\n{progress_bar(100)}"
         )
