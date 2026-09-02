@@ -28,40 +28,6 @@ CREATE TABLE IF NOT EXISTS referrals (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ
 );
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='referred_id'
-  ) THEN
-    IF EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='referred_user_id'
-    ) THEN
-      ALTER TABLE referrals RENAME COLUMN referred_user_id TO referred_id;
-    ELSE
-      ALTER TABLE referrals ADD COLUMN referred_id BIGINT;
-    END IF;
-  END IF;
-END $$;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='state'
-  ) THEN
-    IF EXISTS (
-      SELECT 1 FROM information_schema.columns
-      WHERE table_schema=current_schema() AND table_name='referrals' AND column_name='status'
-    ) THEN
-      ALTER TABLE referrals RENAME COLUMN status TO state;
-    ELSE
-      ALTER TABLE referrals ADD COLUMN state TEXT NOT NULL DEFAULT 'pending';
-    END IF;
-  END IF;
-END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS referrals_referred_id_unique
-  ON referrals(referred_id) WHERE referred_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS force_channels (
   id BIGSERIAL PRIMARY KEY,
   chat_id BIGINT NOT NULL UNIQUE,
@@ -210,6 +176,8 @@ class Database:
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
         self.pool: asyncpg.Pool | None = None
+        self.referral_user_column = "referred_id"
+        self.referral_state_column = "state"
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(
@@ -221,6 +189,43 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            referral_columns = await conn.fetchrow(
+                """
+                SELECT
+                  CASE
+                    WHEN EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_schema=current_schema()
+                        AND table_name='referrals' AND column_name='referred_id'
+                    ) THEN 'referred_id'
+                    WHEN EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_schema=current_schema()
+                        AND table_name='referrals' AND column_name='referred_user_id'
+                    ) THEN 'referred_user_id'
+                    ELSE NULL
+                  END AS user_column,
+                  CASE
+                    WHEN EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_schema=current_schema()
+                        AND table_name='referrals' AND column_name='state'
+                    ) THEN 'state'
+                    WHEN EXISTS (
+                      SELECT 1 FROM information_schema.columns
+                      WHERE table_schema=current_schema()
+                        AND table_name='referrals' AND column_name='status'
+                    ) THEN 'status'
+                    ELSE NULL
+                  END AS state_column
+                """
+            )
+            if referral_columns["user_column"] not in {"referred_id", "referred_user_id"}:
+                raise RuntimeError("The referrals table has no referred_id/referred_user_id column")
+            if referral_columns["state_column"] not in {"state", "status"}:
+                raise RuntimeError("The referrals table has no state/status column")
+            self.referral_user_column = referral_columns["user_column"]
+            self.referral_state_column = referral_columns["state_column"]
             await conn.execute(
                 "UPDATE broadcasts SET status='queued' WHERE status='processing'"
             )
@@ -258,6 +263,16 @@ class Database:
             raise RuntimeError("Database is not connected")
         return self.pool
 
+    def _referral_user_column(self) -> str:
+        if self.referral_user_column not in {"referred_id", "referred_user_id"}:
+            raise RuntimeError("Unsupported referrals user column")
+        return self.referral_user_column
+
+    def _referral_state_column(self) -> str:
+        if self.referral_state_column not in {"state", "status"}:
+            raise RuntimeError("Unsupported referrals state column")
+        return self.referral_state_column
+
     async def register_user(
         self, telegram_id: int, username: str | None, first_name: str, referrer_id: int | None
     ) -> tuple[dict[str, Any], int | None]:
@@ -286,9 +301,11 @@ class Database:
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
+                        user_column = self._referral_user_column()
+                        state_column = self._referral_state_column()
                         referral = await conn.fetchrow(
-                            "INSERT INTO referrals (referrer_id, referred_id, state) "
-                            "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
+                            f"INSERT INTO referrals (referrer_id, {user_column}, {state_column}) "
+                            "VALUES ($1,$2,'pending') ON CONFLICT (" + user_column + ") DO NOTHING "
                             "RETURNING referrer_id",
                             referrer_id,
                             telegram_id,
@@ -305,12 +322,13 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
+        state_column = self._referral_state_column()
         row = await self._p().fetchrow(
-            """
+            f"""
             SELECT
               COUNT(*)::int AS total_referrals,
-              COUNT(*) FILTER (WHERE state='completed')::int AS valid_referrals,
-              COUNT(*) FILTER (WHERE state<>'completed')::int AS invalid_referrals
+              COUNT(*) FILTER (WHERE {state_column}='completed')::int AS valid_referrals,
+              COUNT(*) FILTER (WHERE {state_column}<>'completed')::int AS invalid_referrals
             FROM referrals
             WHERE referrer_id=$1
             """,
@@ -422,35 +440,41 @@ class Database:
                     )
 
     async def mark_subscribed(self, user_id: int) -> None:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
         await self._p().execute(
             "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
         )
         await self._p().execute(
-            "UPDATE referrals SET state='subscribed' WHERE referred_id=$1 AND state='pending'",
+            f"UPDATE referrals SET {state_column}='subscribed' WHERE {user_column}=$1 AND {state_column}='pending'",
             user_id,
         )
 
     async def accept_disclaimer(self, user_id: int) -> None:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE users SET disclaimer_accepted=TRUE WHERE telegram_id=$1", user_id
                 )
                 await conn.execute(
-                    "UPDATE referrals SET state='disclaimer_accepted' "
-                    "WHERE referred_id=$1 AND state IN ('pending','subscribed')",
+                    f"UPDATE referrals SET {state_column}='disclaimer_accepted' "
+                    f"WHERE {user_column}=$1 AND {state_column} IN ('pending','subscribed')",
                     user_id,
                 )
 
     async def complete_gate(self, user_id: int) -> int | None:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
                 )
                 row = await conn.fetchrow(
-                    "UPDATE referrals SET state='completed', completed_at=NOW() "
-                    "WHERE referred_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
+                    f"UPDATE referrals SET {state_column}='completed', completed_at=NOW() "
+                    f"WHERE {user_column}=$1 AND {state_column} IN ('pending','subscribed','disclaimer_accepted') "
                     "RETURNING referrer_id",
                     user_id,
                 )
@@ -464,14 +488,15 @@ class Database:
                 return None
 
     async def dashboard(self) -> dict[str, int]:
+        state_column = self._referral_state_column()
         row = await self._p().fetchrow(
-            """
+            f"""
             SELECT
               (SELECT COUNT(*) FROM users)::int total_users,
               (SELECT COUNT(*) FROM users WHERE joined_at >= NOW()-INTERVAL '24 hours')::int new_users,
               (SELECT COUNT(*) FROM users WHERE is_verified)::int verified_users,
-              (SELECT COUNT(*) FROM referrals WHERE state='completed')::int completed_referrals,
-              (SELECT COUNT(*) FROM referrals WHERE state IN ('pending','subscribed','disclaimer_accepted'))::int pending_referrals,
+              (SELECT COUNT(*) FROM referrals WHERE {state_column}='completed')::int completed_referrals,
+              (SELECT COUNT(*) FROM referrals WHERE {state_column} IN ('pending','subscribed','disclaimer_accepted'))::int pending_referrals,
               (SELECT COUNT(*) FROM rewards WHERE status='available')::int available_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status IN ('assigned','delivered'))::int assigned_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status='delivered')::int delivered_rewards,
@@ -873,6 +898,8 @@ class Database:
         await self._p().execute("UPDATE users SET banned=$1 WHERE telegram_id=$2", banned, user_id)
 
     async def reset_progress(self, user_id: int) -> None:
+        user_column = self._referral_user_column()
+        state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -880,7 +907,7 @@ class Database:
                     user_id,
                 )
                 await conn.execute(
-                    "UPDATE referrals SET state='invalid' WHERE referrer_id=$1 OR referred_id=$1",
+                    f"UPDATE referrals SET {state_column}='invalid' WHERE referrer_id=$1 OR {user_column}=$1",
                     user_id,
                 )
 
