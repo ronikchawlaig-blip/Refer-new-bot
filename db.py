@@ -28,6 +28,24 @@ CREATE TABLE IF NOT EXISTS referrals (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at TIMESTAMPTZ
 );
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='referrals' AND column_name='referred_id'
+  ) THEN
+    IF EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='referrals' AND column_name='referred_user_id'
+    ) THEN
+      ALTER TABLE referrals RENAME COLUMN referred_user_id TO referred_id;
+    ELSE
+      ALTER TABLE referrals ADD COLUMN referred_id BIGINT;
+    END IF;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS referrals_referred_id_unique
+  ON referrals(referred_id) WHERE referred_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS force_channels (
   id BIGSERIAL PRIMARY KEY,
   chat_id BIGINT NOT NULL UNIQUE,
