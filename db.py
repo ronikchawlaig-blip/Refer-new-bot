@@ -176,8 +176,8 @@ class Database:
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
         self.pool: asyncpg.Pool | None = None
-        self.referral_user_column = "referred_id"
-        self.referral_state_column = "state"
+        self.referral_user_column = "referred_user_id"
+        self.referral_state_column = "status"
 
     async def connect(self) -> None:
         self.pool = await asyncpg.create_pool(
@@ -194,28 +194,28 @@ class Database:
                 SELECT
                   CASE
                     WHEN EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_schema=current_schema()
-                        AND table_name='referrals' AND column_name='referred_id'
-                    ) THEN 'referred_id'
-                    WHEN EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_schema=current_schema()
-                        AND table_name='referrals' AND column_name='referred_user_id'
+                      SELECT 1 FROM pg_attribute
+                      WHERE attrelid=to_regclass('referrals')
+                        AND attname='referred_user_id' AND NOT attisdropped
                     ) THEN 'referred_user_id'
+                    WHEN EXISTS (
+                      SELECT 1 FROM pg_attribute
+                      WHERE attrelid=to_regclass('referrals')
+                        AND attname='referred_id' AND NOT attisdropped
+                    ) THEN 'referred_id'
                     ELSE NULL
                   END AS user_column,
                   CASE
                     WHEN EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_schema=current_schema()
-                        AND table_name='referrals' AND column_name='state'
-                    ) THEN 'state'
-                    WHEN EXISTS (
-                      SELECT 1 FROM information_schema.columns
-                      WHERE table_schema=current_schema()
-                        AND table_name='referrals' AND column_name='status'
+                      SELECT 1 FROM pg_attribute
+                      WHERE attrelid=to_regclass('referrals')
+                        AND attname='status' AND NOT attisdropped
                     ) THEN 'status'
+                    WHEN EXISTS (
+                      SELECT 1 FROM pg_attribute
+                      WHERE attrelid=to_regclass('referrals')
+                        AND attname='state' AND NOT attisdropped
+                    ) THEN 'state'
                     ELSE NULL
                   END AS state_column
                 """
