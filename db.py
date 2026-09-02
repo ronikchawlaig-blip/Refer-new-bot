@@ -189,6 +189,9 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute(
+                "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"
+            )
             referral_columns = await conn.fetchrow(
                 """
                 SELECT
@@ -273,6 +276,34 @@ class Database:
             raise RuntimeError("Unsupported referrals state column")
         return self.referral_state_column
 
+    async def _execute_referral_variants(
+        self, conn: asyncpg.Connection, queries: tuple[str, ...], *args: Any
+    ) -> str:
+        last_error: asyncpg.exceptions.UndefinedColumnError | None = None
+        for query in queries:
+            try:
+                async with conn.transaction():
+                    return await conn.execute(query, *args)
+            except asyncpg.exceptions.UndefinedColumnError as error:
+                last_error = error
+        if last_error:
+            raise last_error
+        raise RuntimeError("No referral query variants provided")
+
+    async def _fetchrow_referral_variants(
+        self, conn: asyncpg.Connection, queries: tuple[str, ...], *args: Any
+    ) -> asyncpg.Record | None:
+        last_error: asyncpg.exceptions.UndefinedColumnError | None = None
+        for query in queries:
+            try:
+                async with conn.transaction():
+                    return await conn.fetchrow(query, *args)
+            except asyncpg.exceptions.UndefinedColumnError as error:
+                last_error = error
+        if last_error:
+            raise last_error
+        raise RuntimeError("No referral query variants provided")
+
     async def register_user(
         self, telegram_id: int, username: str | None, first_name: str, referrer_id: int | None
     ) -> tuple[dict[str, Any], int | None]:
@@ -301,24 +332,25 @@ class Database:
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
-                        try:
-                            async with conn.transaction():
-                                referral = await conn.fetchrow(
-                                    "INSERT INTO referrals (referrer_id, referred_user_id, status) "
-                                    "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
-                                    "RETURNING referrer_id",
-                                    referrer_id,
-                                    telegram_id,
-                                )
-                        except asyncpg.exceptions.UndefinedColumnError:
-                            async with conn.transaction():
-                                referral = await conn.fetchrow(
-                                    "INSERT INTO referrals (referrer_id, referred_id, state) "
-                                    "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
-                                    "RETURNING referrer_id",
-                                    referrer_id,
-                                    telegram_id,
-                                )
+                        referral = await self._fetchrow_referral_variants(
+                            conn,
+                            (
+                                "INSERT INTO referrals (referrer_id, referred_user_id, status) "
+                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
+                                "RETURNING referrer_id",
+                                "INSERT INTO referrals (referrer_id, referred_id, state) "
+                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
+                                "RETURNING referrer_id",
+                                "INSERT INTO referrals (referrer_id, referred_id, status) "
+                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
+                                "RETURNING referrer_id",
+                                "INSERT INTO referrals (referrer_id, referred_user_id, state) "
+                                "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
+                                "RETURNING referrer_id",
+                            ),
+                            referrer_id,
+                            telegram_id,
+                        )
                         if referral:
                             created_referrer_id = referral["referrer_id"]
                 return (
@@ -465,17 +497,18 @@ class Database:
                     )
 
     async def mark_subscribed(self, user_id: int) -> None:
-        await self._p().execute(
-            "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
-        )
-        try:
-            await self._p().execute(
-                "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
-                user_id,
+        async with self._p().acquire() as conn:
+            await conn.execute(
+                "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
             )
-        except asyncpg.exceptions.UndefinedColumnError:
-            await self._p().execute(
-                "UPDATE referrals SET state='subscribed' WHERE referred_id=$1 AND state='pending'",
+            await self._execute_referral_variants(
+                conn,
+                (
+                    "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
+                    "UPDATE referrals SET state='subscribed' WHERE referred_id=$1 AND state='pending'",
+                    "UPDATE referrals SET status='subscribed' WHERE referred_id=$1 AND status='pending'",
+                    "UPDATE referrals SET state='subscribed' WHERE referred_user_id=$1 AND state='pending'",
+                ),
                 user_id,
             )
 
@@ -485,20 +518,20 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET disclaimer_accepted=TRUE WHERE telegram_id=$1", user_id
                 )
-                try:
-                    async with conn.transaction():
-                        await conn.execute(
-                            "UPDATE referrals SET status='disclaimer_accepted' "
-                            "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
-                            user_id,
-                        )
-                except asyncpg.exceptions.UndefinedColumnError:
-                    async with conn.transaction():
-                        await conn.execute(
-                            "UPDATE referrals SET state='disclaimer_accepted' "
-                            "WHERE referred_id=$1 AND state IN ('pending','subscribed')",
-                            user_id,
-                        )
+                await self._execute_referral_variants(
+                    conn,
+                    (
+                        "UPDATE referrals SET status='disclaimer_accepted' "
+                        "WHERE referred_user_id=$1 AND status IN ('pending','subscribed')",
+                        "UPDATE referrals SET state='disclaimer_accepted' "
+                        "WHERE referred_id=$1 AND state IN ('pending','subscribed')",
+                        "UPDATE referrals SET status='disclaimer_accepted' "
+                        "WHERE referred_id=$1 AND status IN ('pending','subscribed')",
+                        "UPDATE referrals SET state='disclaimer_accepted' "
+                        "WHERE referred_user_id=$1 AND state IN ('pending','subscribed')",
+                    ),
+                    user_id,
+                )
 
     async def complete_gate(self, user_id: int) -> int | None:
         async with self._p().acquire() as conn:
@@ -506,22 +539,24 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
                 )
-                try:
-                    async with conn.transaction():
-                        row = await conn.fetchrow(
-                            "UPDATE referrals SET status='completed', completed_at=NOW() "
-                            "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
-                            "RETURNING referrer_id",
-                            user_id,
-                        )
-                except asyncpg.exceptions.UndefinedColumnError:
-                    async with conn.transaction():
-                        row = await conn.fetchrow(
-                            "UPDATE referrals SET state='completed', completed_at=NOW() "
-                            "WHERE referred_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
-                            "RETURNING referrer_id",
-                            user_id,
-                        )
+                row = await self._fetchrow_referral_variants(
+                    conn,
+                    (
+                        "UPDATE referrals SET status='completed', completed_at=NOW() "
+                        "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
+                        "RETURNING referrer_id",
+                        "UPDATE referrals SET state='completed', completed_at=NOW() "
+                        "WHERE referred_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
+                        "RETURNING referrer_id",
+                        "UPDATE referrals SET status='completed', completed_at=NOW() "
+                        "WHERE referred_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
+                        "RETURNING referrer_id",
+                        "UPDATE referrals SET state='completed', completed_at=NOW() "
+                        "WHERE referred_user_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
+                        "RETURNING referrer_id",
+                    ),
+                    user_id,
+                )
                 if row:
                     await conn.execute(
                         "UPDATE users SET referral_count=referral_count+1, points=points+1 "
