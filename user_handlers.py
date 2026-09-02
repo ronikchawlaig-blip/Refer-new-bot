@@ -523,6 +523,9 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         if not user or user["banned"]:
             await callback.answer("Access is unavailable for this account.", show_alert=True)
             return None
+        if user["is_verified"] and not await _refresh_verified_user(bot, db, user):
+            await callback.answer("Please verify your access first.", show_alert=True)
+            return None
         if not user["is_verified"]:
             await callback.answer("Please verify your access first.", show_alert=True)
             return None
