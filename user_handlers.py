@@ -141,7 +141,7 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         return False
     referrer_id = await db.complete_gate(user["telegram_id"])
     if referrer_id:
-        asyncio.create_task(_notify_referral_success(bot, db, referrer_id, user))
+        await _notify_referral_success(bot, db, referrer_id, user)
     await status.edit_text("✓ Access verified.")
     return True
 
@@ -192,9 +192,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             referrer if referral_enabled else None,
         )
         if created_referrer_id:
-            asyncio.create_task(
-                _notify_new_referral(bot, created_referrer_id, registered_user)
-            )
+            await _notify_new_referral(bot, created_referrer_id, registered_user)
         if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
             message.from_user.id
         ):
@@ -248,6 +246,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 reply_markup=gate_keyboard(missing),
             )
             return
+        await db.mark_subscribed(callback.from_user.id)
         support_text, is_admin, referrer_id = await animated(
             callback.message,
             lambda: _activate_user(callback.from_user.id, db),
@@ -256,7 +255,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             finish=False,
         )
         if referrer_id:
-            asyncio.create_task(_notify_referral_success(bot, db, referrer_id, user))
+            await _notify_referral_success(bot, db, referrer_id, user)
         await callback.message.edit_text(
             f"✓ Accepted. Your access is now active.\n{progress_bar(100)}"
         )
