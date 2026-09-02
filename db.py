@@ -70,6 +70,30 @@ CREATE TABLE IF NOT EXISTS reward_assignments (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS one_reward_per_user_milestone
   ON reward_assignments(user_id, milestone_id) WHERE milestone_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS stock_products (
+  id BIGSERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  points_required INTEGER NOT NULL DEFAULT 0 CHECK (points_required >= 0),
+  stock INTEGER NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  kind TEXT NOT NULL DEFAULT 'text',
+  text_content TEXT,
+  file_id TEXT,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS stock_claims (
+  id BIGSERIAL PRIMARY KEY,
+  product_id BIGINT NOT NULL REFERENCES stock_products(id) ON DELETE RESTRICT,
+  user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'reserved'
+    CHECK (status IN ('reserved','delivered','failed')),
+  points_spent INTEGER NOT NULL DEFAULT 0,
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  delivered_at TIMESTAMPTZ,
+  error TEXT,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (product_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS admins (
   telegram_id BIGINT PRIMARY KEY,
   role TEXT NOT NULL CHECK (role IN ('owner','admin')),
@@ -382,6 +406,8 @@ class Database:
               (SELECT COUNT(*) FROM rewards WHERE status IN ('assigned','delivered'))::int assigned_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status='delivered')::int delivered_rewards,
               (SELECT COUNT(*) FROM rewards WHERE status='failed')::int failed_deliveries,
+              (SELECT COUNT(*) FROM stock_products WHERE enabled)::int stock_products,
+              (SELECT COALESCE(SUM(stock),0) FROM stock_products WHERE enabled)::int stock_units,
               (SELECT COUNT(*) FROM users WHERE banned)::int banned_users
             """
         )
@@ -529,6 +555,144 @@ class Database:
         rows = await self._p().fetch(
             "SELECT ra.*, r.name, r.kind, r.text_content FROM reward_assignments ra "
             "JOIN rewards r ON r.id=ra.reward_id WHERE ra.user_id=$1 ORDER BY ra.assigned_at DESC LIMIT 30",
+            user_id,
+        )
+        return [dict(row) for row in rows]
+
+    async def list_stock_products(self, include_disabled: bool = False) -> list[dict[str, Any]]:
+        where = "" if include_disabled else "WHERE enabled"
+        rows = await self._p().fetch(
+            f"SELECT * FROM stock_products {where} ORDER BY enabled DESC, created_at DESC, id DESC"
+        )
+        return [dict(row) for row in rows]
+
+    async def get_stock_product(self, product_id: int) -> dict[str, Any] | None:
+        row = await self._p().fetchrow(
+            "SELECT * FROM stock_products WHERE id=$1", product_id
+        )
+        return dict(row) if row else None
+
+    async def add_stock_product(
+        self,
+        name: str,
+        points_required: int,
+        stock: int,
+        kind: str,
+        text_content: str | None,
+        file_id: str | None,
+    ) -> int:
+        return await self._p().fetchval(
+            "INSERT INTO stock_products "
+            "(name,points_required,stock,kind,text_content,file_id) "
+            "VALUES ($1,$2,$3,$4,$5,$6) RETURNING id",
+            name[:120],
+            points_required,
+            stock,
+            kind,
+            text_content,
+            file_id,
+        )
+
+    async def restock_product(self, product_id: int, amount: int) -> bool:
+        updated = await self._p().execute(
+            "UPDATE stock_products SET stock=stock+$1 WHERE id=$2",
+            amount,
+            product_id,
+        )
+        return updated.endswith("1")
+
+    async def toggle_stock_product(self, product_id: int) -> None:
+        await self._p().execute(
+            "UPDATE stock_products SET enabled=NOT enabled WHERE id=$1", product_id
+        )
+
+    async def claim_stock_product(
+        self, user_id: int, product_id: int
+    ) -> tuple[str, dict[str, Any] | None]:
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                user = await conn.fetchrow(
+                    "SELECT points,is_verified,banned FROM users WHERE telegram_id=$1 FOR UPDATE",
+                    user_id,
+                )
+                if not user:
+                    return "user_not_found", None
+                if user["banned"]:
+                    return "banned", None
+                if not user["is_verified"]:
+                    return "not_verified", None
+                product = await conn.fetchrow(
+                    "SELECT * FROM stock_products WHERE id=$1 FOR UPDATE", product_id
+                )
+                if not product or not product["enabled"]:
+                    return "unavailable", None
+                previous_claim = await conn.fetchval(
+                    "SELECT 1 FROM stock_claims WHERE product_id=$1 AND user_id=$2",
+                    product_id,
+                    user_id,
+                )
+                if previous_claim:
+                    return "already_claimed", dict(product)
+                if product["stock"] <= 0:
+                    return "out_of_stock", dict(product)
+                if user["points"] < product["points_required"]:
+                    return "insufficient_points", dict(product)
+                await conn.execute(
+                    "UPDATE users SET points=points-$1 WHERE telegram_id=$2",
+                    product["points_required"],
+                    user_id,
+                )
+                await conn.execute(
+                    "UPDATE stock_products SET stock=stock-1 WHERE id=$1", product_id
+                )
+                claim = await conn.fetchrow(
+                    "INSERT INTO stock_claims "
+                    "(product_id,user_id,status,points_spent) VALUES ($1,$2,'reserved',$3) "
+                    "RETURNING id,product_id,user_id,status,points_spent,claimed_at",
+                    product_id,
+                    user_id,
+                    product["points_required"],
+                )
+                result = dict(product)
+                result.update(dict(claim))
+                result["remaining_points"] = user["points"] - product["points_required"]
+                return "claimed", result
+
+    async def mark_stock_claim(
+        self, claim_id: int, user_id: int, delivered: bool, error: str = ""
+    ) -> None:
+        status = "delivered" if delivered else "failed"
+        await self._p().execute(
+            "UPDATE stock_claims SET status=$1, delivered_at=CASE WHEN $2 THEN NOW() END, "
+            "error=$3, attempt_count=attempt_count+1 "
+            "WHERE id=$4 AND user_id=$5",
+            status,
+            delivered,
+            error[:1000],
+            claim_id,
+            user_id,
+        )
+
+    async def user_claim_history(self, user_id: int) -> list[dict[str, Any]]:
+        rows = await self._p().fetch(
+            """
+            SELECT source, item_id, name, status, claimed_at, points_spent
+            FROM (
+              SELECT 'milestone'::text AS source, ra.reward_id AS item_id, r.name,
+                     ra.status, ra.assigned_at AS claimed_at, 0::int AS points_spent
+              FROM reward_assignments ra
+              JOIN rewards r ON r.id=ra.reward_id
+              WHERE ra.user_id=$1
+              UNION ALL
+              SELECT 'stock'::text AS source, sc.product_id AS item_id, sp.name,
+                     sc.status, sc.claimed_at, sc.points_spent
+              FROM stock_claims sc
+              JOIN stock_products sp ON sp.id=sc.product_id
+              WHERE sc.user_id=$1
+            ) history
+            ORDER BY claimed_at DESC
+            LIMIT 30
+            """,
             user_id,
         )
         return [dict(row) for row in rows]

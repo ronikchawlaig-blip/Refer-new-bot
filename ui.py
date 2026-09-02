@@ -18,12 +18,13 @@ def main_menu(
     keyboard = [
         [
             KeyboardButton(text="👥 Refer & Earn", style=ButtonStyle.PRIMARY),
-            KeyboardButton(text="🎁 My Rewards", style=ButtonStyle.PRIMARY),
+            KeyboardButton(text="🛍 Stock", style=ButtonStyle.PRIMARY),
         ],
         [
+            KeyboardButton(text="🎁 My Rewards", style=ButtonStyle.PRIMARY),
             KeyboardButton(text="📊 My Progress", style=ButtonStyle.SUCCESS),
-            KeyboardButton(text=support_text, style=ButtonStyle.SUCCESS),
         ],
+        [KeyboardButton(text=support_text, style=ButtonStyle.SUCCESS)],
     ]
     if show_admin_panel:
         keyboard.append(
@@ -66,6 +67,31 @@ def disclaimer_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="✅ Accept & Continue", callback_data="u:accept")],
+        ]
+    )
+
+
+def stock_products_keyboard(products: list[dict]) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for product in products:
+        name = str(product["name"])[:24]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"{name} · {product['points_required']} pts · {product['stock']} left",
+                    callback_data=f"u:stock:{product['id']}",
+                )
+            ]
+        )
+    rows.append([InlineKeyboardButton(text="← Back", callback_data="u:stock_back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def stock_product_keyboard(product_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🎁 Claim now", callback_data=f"u:stock_claim:{product_id}")],
+            [InlineKeyboardButton(text="← Back to Stock", callback_data="u:stock")],
         ]
     )
 

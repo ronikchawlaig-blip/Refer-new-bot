@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape
 from typing import Any
 
 from aiogram import Bot, F, Router
@@ -10,10 +11,36 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from db import Database
 from services import animated, send_reward
 from states import SessionStore
-from ui import admin_home, disclaimer_keyboard, gate_keyboard, main_menu, progress_bar, screen
+from ui import (
+    admin_home,
+    disclaimer_keyboard,
+    gate_keyboard,
+    main_menu,
+    progress_bar,
+    screen,
+    stock_product_keyboard,
+    stock_products_keyboard,
+)
 
 log = logging.getLogger(__name__)
 SUPPORT_BOT_LINK = "https://t.me/Referrsupportt_bot"
+
+
+def _history_body(history: list[dict[str, Any]]) -> str:
+    lines = []
+    for row in history:
+        status = str(row["status"]).title()
+        points = (
+            f" · {row['points_spent']} points"
+            if row["source"] == "stock" and row["points_spent"]
+            else ""
+        )
+        kind = "Stock" if row["source"] == "stock" else "Milestone"
+        lines.append(
+            f"• <b>{escape(str(row['name']))}</b> · {kind}{points}\n"
+            f"  Status: {status} · {row['claimed_at']:%d %b %Y, %H:%M}"
+        )
+    return "\n\n".join(lines)
 
 
 async def _is_subscribed(bot: Bot, channel: dict[str, Any], user_id: int) -> bool:
@@ -195,6 +222,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         support_text = await db.get_setting("support_button_text", "💬 Support")
         if message.text not in {
             "👥 Refer & Earn",
+            "🛍 Stock",
             "🎁 My Rewards",
             "📊 My Progress",
             support_text,
@@ -255,10 +283,41 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                     f"Remaining: <b>{remaining}</b>",
                 )
             )
+        elif message.text == "🛍 Stock":
+            status = await message.answer("⠋ Loading stock…")
+
+            async def load_stock() -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+                return await db.list_stock_products(), await db.get_user(message.from_user.id)
+
+            products, user = await animated(
+                status,
+                load_stock,
+                "Loading stock",
+                finish=False,
+            )
+            if not products:
+                await status.edit_text(
+                    screen("Stock", "There are no products available right now.")
+                )
+                return
+            body = "\n\n".join(
+                f"<b>{escape(str(product['name']))}</b>\n"
+                f"Available: <b>{product['stock']}</b>\n"
+                f"Cost: <b>{product['points_required']} points</b>"
+                for product in products
+            )
+            await status.edit_text(
+                screen(
+                    "Stock",
+                    f"Your points: <b>{user['points'] if user else 0}</b>\n\n{body}\n\n"
+                    "Tap a product to view its details and claim it.",
+                ),
+                reply_markup=stock_products_keyboard(products),
+            )
         elif message.text == "🎁 My Rewards":
             placeholder = await message.answer("⠋ Preparing your rewards…")
 
-            async def claim_and_deliver() -> tuple[int, int, str]:
+            async def claim_and_deliver() -> tuple[int, int, list[dict[str, Any]]]:
                 rewards = await db.claim_rewards(message.from_user.id)
                 failed = 0
                 for reward in rewards:
@@ -268,10 +327,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                     except Exception as exc:
                         failed += 1
                         await db.mark_reward(reward["id"], message.from_user.id, False, str(exc))
-                empty_body = ""
-                if not rewards:
-                    empty_body = (await db.get_content("reward_empty"))["body"]
-                return len(rewards), failed, empty_body
+                return len(rewards), failed, await db.user_claim_history(message.from_user.id)
 
             reward_count, failed_count, empty_body = await animated(
                 placeholder,
@@ -281,7 +337,14 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 finish=False,
             )
             if not reward_count:
-                await placeholder.edit_text(empty_body)
+                if empty_body:
+                    await placeholder.edit_text(
+                        screen("My Rewards", _history_body(empty_body))
+                    )
+                else:
+                    await placeholder.edit_text(
+                        (await db.get_content("reward_empty"))["body"]
+                    )
                 return
             delivery_note = (
                 f"\n\n⚠️ Failed deliveries: <b>{failed_count}</b>. An admin can retry them."
@@ -289,7 +352,13 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 else ""
             )
             await placeholder.edit_text(
-                f"✓ Rewards processed: <b>{reward_count}</b>\n{progress_bar(100)}{delivery_note}"
+                screen(
+                    "My Rewards",
+                    f"✓ New rewards delivered: <b>{reward_count}</b>\n"
+                    f"{progress_bar(100)}{delivery_note}\n\n"
+                    "<b>Claim history</b>\n\n"
+                    f"{_history_body(empty_body)}",
+                )
             )
         elif message.text == "📊 My Progress":
             status = await message.answer("⠋ Loading progress…")
@@ -351,5 +420,125 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 )
             else:
                 await status.edit_text(instructions)
+
+    @router.callback_query(F.data == "u:stock_back")
+    async def stock_back(callback: CallbackQuery) -> None:
+        await callback.answer()
+        if callback.message:
+            await callback.message.edit_text("Choose an option from the menu below.")
+
+    async def callback_access(callback: CallbackQuery) -> dict[str, Any] | None:
+        user = await db.get_user(callback.from_user.id)
+        if not user or user["banned"]:
+            await callback.answer("Access is unavailable for this account.", show_alert=True)
+            return None
+        if not user["is_verified"]:
+            await callback.answer("Please verify your access first.", show_alert=True)
+            return None
+        if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(
+            callback.from_user.id
+        ):
+            await callback.answer("The bot is temporarily unavailable.", show_alert=True)
+            return None
+        return user
+
+    @router.callback_query(F.data == "u:stock")
+    async def stock_list_callback(callback: CallbackQuery) -> None:
+        user = await callback_access(callback)
+        if not user or not callback.message:
+            return
+        await callback.answer()
+        products = await db.list_stock_products()
+        if not products:
+            await callback.message.edit_text(
+                screen("Stock", "There are no products available right now.")
+            )
+            return
+        body = "\n\n".join(
+            f"<b>{escape(str(product['name']))}</b>\n"
+            f"Available: <b>{product['stock']}</b>\n"
+            f"Cost: <b>{product['points_required']} points</b>"
+            for product in products
+        )
+        await callback.message.edit_text(
+            screen(
+                "Stock",
+                f"Your points: <b>{user['points']}</b>\n\n{body}\n\n"
+                "Tap a product to view its details and claim it.",
+            ),
+            reply_markup=stock_products_keyboard(products),
+        )
+
+    @router.callback_query(F.data.startswith("u:stock_claim:"))
+    async def stock_claim(callback: CallbackQuery) -> None:
+        user = await callback_access(callback)
+        if not user or not callback.message:
+            return
+        try:
+            product_id = int((callback.data or "").split(":")[-1])
+        except ValueError:
+            await callback.answer("Invalid product.", show_alert=True)
+            return
+        await callback.answer("Checking eligibility…")
+        result, claim = await db.claim_stock_product(callback.from_user.id, product_id)
+        if result != "claimed" or not claim:
+            messages = {
+                "already_claimed": "You have already claimed this product.",
+                "out_of_stock": "This product is out of stock.",
+                "insufficient_points": (
+                    f"You need {claim['points_required'] - user['points']} more points "
+                    "to claim this product."
+                    if claim
+                    else "You do not have enough points to claim this product."
+                ),
+                "not_verified": "Please verify your access before claiming a product.",
+                "banned": "Access is unavailable for this account.",
+                "unavailable": "This product is no longer available.",
+            }
+            await callback.message.answer(messages.get(result, "This product cannot be claimed right now."))
+            return
+        try:
+            await send_reward(bot, callback.from_user.id, claim)
+            await db.mark_stock_claim(claim["id"], callback.from_user.id, True)
+            await callback.message.edit_text(
+                f"✅ <b>{escape(str(claim['name']))}</b> claimed successfully.\n\n"
+                f"Points spent: <b>{claim['points_spent']}</b>\n"
+                f"Remaining points: <b>{claim['remaining_points']}</b>\n\n"
+                "Your reward has been sent.",
+                reply_markup=stock_product_keyboard(claim["product_id"]),
+            )
+        except Exception as exc:
+            await db.mark_stock_claim(claim["id"], callback.from_user.id, False, str(exc))
+            await callback.message.edit_text(
+                "⚠️ Your claim was reserved, but delivery failed. "
+                "Please contact Support so an admin can retry it.",
+                reply_markup=stock_product_keyboard(claim["product_id"]),
+            )
+
+    @router.callback_query(F.data.startswith("u:stock:"))
+    async def stock_product(callback: CallbackQuery) -> None:
+        user = await callback_access(callback)
+        if not user or not callback.message:
+            return
+        try:
+            product_id = int((callback.data or "").split(":")[-1])
+        except ValueError:
+            await callback.answer("Invalid product.", show_alert=True)
+            return
+        product = await db.get_stock_product(product_id)
+        if not product or not product["enabled"]:
+            await callback.answer("This product is no longer available.", show_alert=True)
+            return
+        await callback.answer()
+        await callback.message.edit_text(
+            screen(
+                escape(str(product["name"])),
+                f"Available stock: <b>{product['stock']}</b>\n"
+                f"Required points: <b>{product['points_required']}</b>\n"
+                f"Your points: <b>{user['points']}</b>\n\n"
+                f"{escape(str(product['text_content'] or 'Tap Claim now to redeem this product.'))}",
+            ),
+            reply_markup=stock_product_keyboard(product_id),
+        )
 
     return router

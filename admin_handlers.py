@@ -83,6 +83,10 @@ def setup_admin_router(
             "rewards": "rewards",
             "rew_add": "rewards",
             "rew_bulk": "rewards",
+            "stock": "rewards",
+            "stock_add": "rewards",
+            "stock_restock": "rewards",
+            "stock_toggle": "rewards",
             "milestones": "rewards",
             "inventory": "rewards",
             "history": "rewards",
@@ -177,6 +181,9 @@ def setup_admin_router(
                     f"Assigned: <b>{stats['assigned_rewards']}</b>",
                     f"Delivered: <b>{stats['delivered_rewards']}</b>",
                     f"Failed deliveries: <b>{stats['failed_deliveries']}</b>",
+                    "",
+                    f"Stock products: <b>{stats['stock_products']}</b>",
+                    f"Stock units available: <b>{stats['stock_units']}</b>",
                     f"Banned users: <b>{stats['banned_users']}</b>",
                 ]
             )
@@ -191,7 +198,8 @@ def setup_admin_router(
                 admin_section(
                     [
                         [("➕ Add Reward", "a:rew_add"), ("📦 Bulk Add", "a:rew_bulk")],
-                        [("🎯 Milestones", "a:milestones"), ("📊 Inventory", "a:inventory")],
+                        [("🛍 Stock", "a:stock"), ("🎯 Milestones", "a:milestones")],
+                        [("📊 Inventory", "a:inventory")],
                         [("📜 Delivery History", "a:history"), ("❌ Failed Deliveries", "a:failed")],
                     ]
                 ),
@@ -202,6 +210,52 @@ def setup_admin_router(
         elif action == "rew_bulk":
             sessions.set(admin_id, "bulk_content")
             await callback.message.answer("Send one reward per line. Text, links and codes are supported.")
+        elif action == "stock":
+            products = await animated(
+                callback.message,
+                lambda: db.list_stock_products(include_disabled=True),
+                "Loading stock",
+                finish=False,
+            )
+            body = "\n".join(
+                f"• {product['name']} · {product['stock']} available · "
+                f"{product['points_required']} points · "
+                f"{'enabled' if product['enabled'] else 'disabled'}"
+                for product in products
+            ) or "No stock products yet."
+            product_rows = [
+                [
+                    (
+                        f"{'🟢' if product['enabled'] else '🔴'} {product['name'][:18]}",
+                        f"a:stock_toggle:{product['id']}",
+                    ),
+                    ("＋ Stock", f"a:stock_restock:{product['id']}"),
+                ]
+                for product in products
+            ]
+            await admin_screen(
+                callback,
+                "Stock Management",
+                body
+                + "\n\nTo add a product, send its reward content first, then "
+                "<code>product name | points required | stock count</code>.",
+                admin_section(
+                    [[("➕ Add Product", "a:stock_add")], *product_rows],
+                    "a:rewards",
+                ),
+            )
+        elif action == "stock_add":
+            sessions.set(admin_id, "stock_content")
+            await callback.message.answer(
+                "Send the product reward now: text, link, code, photo, video, GIF, document or APK."
+            )
+        elif action == "stock_restock" and len(parts) > 2:
+            sessions.set(admin_id, "stock_restock", product_id=int(parts[2]))
+            await callback.message.answer("Send the number of units to add to this product.")
+        elif action == "stock_toggle" and len(parts) > 2:
+            await db.toggle_stock_product(int(parts[2]))
+            await db.audit(admin_id, "stock_product_toggled", "stock_product", parts[2])
+            await callback.message.answer("✓ Stock product status updated.")
         elif action == "milestones":
             milestones = await animated(
                 callback.message,
@@ -638,6 +692,17 @@ def setup_admin_router(
         if flow == "reward_content":
             sessions.set(message.from_user.id, "reward_meta", kind=kind, body=body, file_id=file_id)
             await message.answer("Now send: milestone referral count | optional reward name")
+        elif flow == "stock_content":
+            sessions.set(
+                message.from_user.id,
+                "stock_meta",
+                kind=kind,
+                body=body,
+                file_id=file_id,
+            )
+            await message.answer(
+                "Now send: product name | points required | stock count"
+            )
         elif flow == "reward_meta":
             try:
                 required, _, name = (body or "").partition("|")
@@ -664,6 +729,51 @@ def setup_admin_router(
                 )
             except Exception:
                 await message.answer("Use the format: 5 | Premium Reward")
+        elif flow == "stock_meta":
+            try:
+                name, points, stock = [part.strip() for part in (body or "").split("|", 2)]
+                points_required = int(points)
+                stock_count = int(stock)
+                if not name or points_required < 0 or stock_count < 0:
+                    raise ValueError
+
+                async def save_stock_product() -> int:
+                    product_id = await db.add_stock_product(
+                        name,
+                        points_required,
+                        stock_count,
+                        session["kind"],
+                        session["body"],
+                        session["file_id"],
+                    )
+                    await db.audit(
+                        message.from_user.id,
+                        "stock_product_added",
+                        "stock_product",
+                        str(product_id),
+                        {
+                            "points_required": points_required,
+                            "stock": stock_count,
+                        },
+                    )
+                    return product_id
+
+                status, product_id = await animate_message(
+                    "Saving stock product",
+                    save_stock_product,
+                    progress=True,
+                )
+                sessions.pop(message.from_user.id)
+                await status.edit_text(
+                    f"✓ Stock product added: <b>{name}</b>\n"
+                    f"Points: <b>{points_required}</b> · Stock: <b>{stock_count}</b>\n"
+                    f"{progress_bar(100)}"
+                )
+            except (TypeError, ValueError):
+                await message.answer(
+                    "Use: product name | points required | stock count\n"
+                    "Points and stock must be zero or greater."
+                )
         elif flow == "bulk_content":
             items = [(line.strip(), "text", line.strip(), None) for line in (body or "").splitlines() if line.strip()]
             sessions.set(message.from_user.id, "bulk_meta", items=items)
@@ -679,6 +789,28 @@ def setup_admin_router(
         elif flow == "bulk_confirm":
             # This path is reached only by text; callback handles confirmation.
             pass
+        elif flow == "stock_restock":
+            try:
+                amount = int((body or "").strip())
+                if amount <= 0:
+                    raise ValueError
+
+                async def add_stock() -> None:
+                    if not await db.restock_product(session["product_id"], amount):
+                        raise ValueError("Product not found")
+                    await db.audit(
+                        message.from_user.id,
+                        "stock_restocked",
+                        "stock_product",
+                        str(session["product_id"]),
+                        {"amount": amount},
+                    )
+
+                status, _ = await animate_message("Updating stock", add_stock)
+                sessions.pop(message.from_user.id)
+                await status.edit_text(f"✓ Added <b>{amount}</b> units to stock.")
+            except (TypeError, ValueError):
+                await message.answer("Send a positive whole number of units.")
         elif flow == "force_channel":
             try:
                 chat, title, username, invite = [part.strip() for part in (body or "").split("|", 3)]
