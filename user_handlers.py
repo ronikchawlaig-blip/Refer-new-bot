@@ -96,7 +96,22 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
             reply_markup=disclaimer_keyboard(),
         )
         return False
-    await db.complete_gate(user["telegram_id"])
+    referrer_id = await db.complete_gate(user["telegram_id"])
+    if referrer_id:
+        try:
+            referrer = await db.get_user(referrer_id)
+            if referrer:
+                await bot.send_message(
+                    referrer_id,
+                    "🎉 <b>Referral successful!</b>\n\n"
+                    f"<b>{escape(str(user.get('first_name') or 'Your referral'))}</b> "
+                    "has completed verification.\n"
+                    "You earned <b>1 point</b>.\n"
+                    f"Successful referrals: <b>{referrer['referral_count']}</b>\n"
+                    f"Your points: <b>{referrer['points']}</b>",
+                )
+        except Exception:
+            log.exception("Unable to notify referrer %s", referrer_id)
     await status.edit_text("✓ Access verified.")
     return True
 
@@ -536,7 +551,8 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
                 f"Available stock: <b>{product['available_stock']}</b>\n"
                 f"Required points: <b>{product['points_required']}</b>\n"
                 f"Your points: <b>{user['points']}</b>\n\n"
-                f"{escape(str(product['text_content'] or 'Tap Claim now to redeem this product.'))}",
+                "Reward details are hidden until you claim this product.\n"
+                "Tap Claim now to redeem it.",
             ),
             reply_markup=stock_product_keyboard(product_id),
         )

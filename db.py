@@ -386,7 +386,7 @@ class Database:
                     user_id,
                 )
 
-    async def complete_gate(self, user_id: int) -> None:
+    async def complete_gate(self, user_id: int) -> int | None:
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -404,6 +404,8 @@ class Database:
                         "WHERE telegram_id=$1",
                         row["referrer_id"],
                     )
+                    return row["referrer_id"]
+                return None
 
     async def dashboard(self) -> dict[str, int]:
         row = await self._p().fetchrow(
