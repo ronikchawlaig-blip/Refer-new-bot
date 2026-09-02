@@ -201,7 +201,8 @@ class Database:
             await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type TEXT")
             await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id TEXT")
             await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb")
-            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")            await conn.execute(
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
+            await conn.execute(
                 "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"
             )
             referral_columns = await conn.fetchrow(
