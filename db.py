@@ -440,10 +440,16 @@ class Database:
         await self._p().execute(
             "UPDATE users SET force_subscribed=TRUE WHERE telegram_id=$1", user_id
         )
-        await self._p().execute(
-            "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
-            user_id,
-        )
+        try:
+            await self._p().execute(
+                "UPDATE referrals SET status='subscribed' WHERE referred_user_id=$1 AND status='pending'",
+                user_id,
+            )
+        except asyncpg.exceptions.UndefinedColumnError:
+            await self._p().execute(
+                "UPDATE referrals SET state='subscribed' WHERE referred_id=$1 AND state='pending'",
+                user_id,
+            )
 
     async def accept_disclaimer(self, user_id: int) -> None:
         async with self._p().acquire() as conn:
@@ -463,12 +469,22 @@ class Database:
                 await conn.execute(
                     "UPDATE users SET is_verified=TRUE WHERE telegram_id=$1", user_id
                 )
-                row = await conn.fetchrow(
-                    "UPDATE referrals SET status='completed', completed_at=NOW() "
-                    "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
-                    "RETURNING referrer_id",
-                    user_id,
-                )
+                try:
+                    async with conn.transaction():
+                        row = await conn.fetchrow(
+                            "UPDATE referrals SET status='completed', completed_at=NOW() "
+                            "WHERE referred_user_id=$1 AND status IN ('pending','subscribed','disclaimer_accepted') "
+                            "RETURNING referrer_id",
+                            user_id,
+                        )
+                except asyncpg.exceptions.UndefinedColumnError:
+                    async with conn.transaction():
+                        row = await conn.fetchrow(
+                            "UPDATE referrals SET state='completed', completed_at=NOW() "
+                            "WHERE referred_id=$1 AND state IN ('pending','subscribed','disclaimer_accepted') "
+                            "RETURNING referrer_id",
+                            user_id,
+                        )
                 if row:
                     await conn.execute(
                         "UPDATE users SET referral_count=referral_count+1, points=points+1 "
