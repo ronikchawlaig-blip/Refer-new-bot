@@ -438,22 +438,35 @@ class Database:
                     # A user may have opened the bot before clicking a referral link.
                     # Attribute the link only while their access is still unverified,
                     # and never replace an existing referral attribution.
-                    if referrer_id and referrer_id != telegram_id and not existing["is_verified"]:
+                    if referrer_id and referrer_id != telegram_id:
                         referrer_exists = await conn.fetchval(
                             "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                         )
                         if referrer_exists:
                             user_column = self._referral_user_column()
                             state_column = self._referral_state_column()
-                            referral = await conn.fetchrow(
-                                f"INSERT INTO referrals ({owner_column}, {user_column}, {state_column}) "
-                                f"VALUES ($1,$2,'pending') ON CONFLICT ({user_column}) DO NOTHING "
-                                f"RETURNING {owner_column}",
-                                referrer_id,
+                            prior_referral = await conn.fetchval(
+                                f"SELECT 1 FROM referrals WHERE {user_column}=$1",
                                 telegram_id,
                             )
-                            if referral:
-                                created_referrer_id = referral[owner_column]
+                            if not prior_referral:
+                                referral_state = "completed" if existing["is_verified"] else "pending"
+                                referral = await conn.fetchrow(
+                                    f"INSERT INTO referrals ({owner_column}, {user_column}, {state_column}) "
+                                    f"VALUES ($1,$2,$3) ON CONFLICT ({user_column}) DO NOTHING "
+                                    f"RETURNING {owner_column}",
+                                    referrer_id,
+                                    telegram_id,
+                                    referral_state,
+                                )
+                                if referral:
+                                    created_referrer_id = referral[owner_column]
+                                    if referral_state == "completed":
+                                        await conn.execute(
+                                            "UPDATE users SET referral_count=referral_count+1, points=points+1 "
+                                            "WHERE telegram_id=$1",
+                                            created_referrer_id,
+                                        )
                     return (
                         dict(await conn.fetchrow("SELECT * FROM users WHERE telegram_id=$1", telegram_id)),
                         created_referrer_id,
