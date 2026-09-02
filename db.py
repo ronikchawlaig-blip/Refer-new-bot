@@ -301,13 +301,24 @@ class Database:
                         "SELECT 1 FROM users WHERE telegram_id=$1", referrer_id
                     )
                     if referrer_exists:
-                        referral = await conn.fetchrow(
-                            "INSERT INTO referrals (referrer_id, referred_user_id, status) "
-                            "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
-                            "RETURNING referrer_id",
-                            referrer_id,
-                            telegram_id,
-                        )
+                        try:
+                            async with conn.transaction():
+                                referral = await conn.fetchrow(
+                                    "INSERT INTO referrals (referrer_id, referred_user_id, status) "
+                                    "VALUES ($1,$2,'pending') ON CONFLICT (referred_user_id) DO NOTHING "
+                                    "RETURNING referrer_id",
+                                    referrer_id,
+                                    telegram_id,
+                                )
+                        except asyncpg.exceptions.UndefinedColumnError:
+                            async with conn.transaction():
+                                referral = await conn.fetchrow(
+                                    "INSERT INTO referrals (referrer_id, referred_id, state) "
+                                    "VALUES ($1,$2,'pending') ON CONFLICT (referred_id) DO NOTHING "
+                                    "RETURNING referrer_id",
+                                    referrer_id,
+                                    telegram_id,
+                                )
                         if referral:
                             created_referrer_id = referral["referrer_id"]
                 return (
@@ -320,17 +331,34 @@ class Database:
         return dict(row) if row else None
 
     async def referral_stats(self, referrer_id: int) -> dict[str, int]:
-        row = await self._p().fetchrow(
-            """
-            SELECT
-              COUNT(*)::int AS total_referrals,
-              COUNT(*) FILTER (WHERE status='completed')::int AS valid_referrals,
-              COUNT(*) FILTER (WHERE status<>'completed')::int AS invalid_referrals
-            FROM referrals
-            WHERE referrer_id=$1
-            """,
-            referrer_id,
-        )
+        try:
+            async with self._p().acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """
+                        SELECT
+                          COUNT(*)::int AS total_referrals,
+                          COUNT(*) FILTER (WHERE status='completed')::int AS valid_referrals,
+                          COUNT(*) FILTER (WHERE status<>'completed')::int AS invalid_referrals
+                        FROM referrals
+                        WHERE referrer_id=$1
+                        """,
+                        referrer_id,
+                    )
+        except asyncpg.exceptions.UndefinedColumnError:
+            async with self._p().acquire() as conn:
+                async with conn.transaction():
+                    row = await conn.fetchrow(
+                        """
+                        SELECT
+                          COUNT(*)::int AS total_referrals,
+                          COUNT(*) FILTER (WHERE state='completed')::int AS valid_referrals,
+                          COUNT(*) FILTER (WHERE state<>'completed')::int AS invalid_referrals
+                        FROM referrals
+                        WHERE referrer_id=$1
+                        """,
+                        referrer_id,
+                    )
         return dict(row)
 
     async def is_admin(self, user_id: int, permission: str | None = None) -> bool:
@@ -919,10 +947,18 @@ class Database:
                     "UPDATE users SET referral_count=0, points=0, is_verified=FALSE WHERE telegram_id=$1",
                     user_id,
                 )
-                await conn.execute(
-                    "UPDATE referrals SET status='invalid' WHERE referrer_id=$1 OR referred_user_id=$1",
-                    user_id,
-                )
+                try:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "UPDATE referrals SET status='invalid' WHERE referrer_id=$1 OR referred_user_id=$1",
+                            user_id,
+                        )
+                except asyncpg.exceptions.UndefinedColumnError:
+                    async with conn.transaction():
+                        await conn.execute(
+                            "UPDATE referrals SET state='invalid' WHERE referrer_id=$1 OR referred_id=$1",
+                            user_id,
+                        )
 
     async def list_admins(self) -> list[dict[str, Any]]:
         return [dict(row) for row in await self._p().fetch("SELECT * FROM admins ORDER BY role,telegram_id")]
