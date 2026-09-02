@@ -43,8 +43,8 @@ BEGIN
       ALTER TABLE referrals ADD COLUMN referred_id BIGINT;
     END IF;
   END IF;
-END $;
-DO $
+END $$;
+DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
@@ -59,7 +59,7 @@ BEGIN
       ALTER TABLE referrals ADD COLUMN state TEXT NOT NULL DEFAULT 'pending';
     END IF;
   END IF;
-END $;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS referrals_referred_id_unique
   ON referrals(referred_id) WHERE referred_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS force_channels (
