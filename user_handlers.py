@@ -45,14 +45,36 @@ def _history_body(history: list[dict[str, Any]]) -> str:
 
 
 async def _is_subscribed(bot: Bot, channel: dict[str, Any], user_id: int) -> bool:
-    try:
-        member = await bot.get_chat_member(channel["chat_id"], user_id)
-        return member.status not in {"left", "kicked"} and (
-            member.status != "restricted" or bool(getattr(member, "is_member", True))
-        )
-    except Exception:
-        log.warning("Unable to verify channel %s", channel["chat_id"])
-        return False
+    references: list[Any] = [channel["chat_id"]]
+    username = str(channel.get("username") or "").strip()
+    if username:
+        references.append(username if username.startswith("@") else f"@{username}")
+
+    for index, chat_reference in enumerate(dict.fromkeys(references)):
+        try:
+            member = await bot.get_chat_member(chat_reference, user_id)
+            status = getattr(member.status, "value", member.status)
+            status = str(status).lower()
+            if status in {"creator", "administrator", "member"}:
+                return True
+            if status == "restricted":
+                return bool(getattr(member, "is_member", False))
+            return False
+        except Exception as exc:
+            if index + 1 < len(references):
+                log.warning(
+                    "Unable to verify channel %s by chat_id; retrying username: %s",
+                    channel["chat_id"],
+                    exc,
+                )
+            else:
+                log.warning(
+                    "Unable to verify channel %s (%s): %s",
+                    channel["chat_id"],
+                    username or "no username fallback",
+                    exc,
+                )
+    return False
 
 
 async def _find_missing_channels(
@@ -64,6 +86,16 @@ async def _find_missing_channels(
     )
     missing = [channel for channel, is_member in zip(channels, subscribed) if not is_member]
     return channels, missing
+
+
+async def _refresh_verified_user(bot: Bot, db: Database, user: dict[str, Any]) -> bool:
+    if not user["is_verified"]:
+        return False
+    _, missing = await _find_missing_channels(bot, db, user["telegram_id"])
+    if missing:
+        await db.invalidate_verification(user["telegram_id"])
+        return False
+    return True
 
 
 async def _notify_new_referral(
@@ -124,6 +156,7 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         finish=False,
     )
     if missing:
+        await db.invalidate_verification(user["telegram_id"])
         content = await db.get_content("force_subscribe")
         await status.edit_text(
             screen("Complete access", content["body"]),
@@ -171,9 +204,9 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             content = await db.get_content("maintenance")
             await message.answer(screen("Temporarily unavailable", content["body"]))
             return False
-        if not user["is_verified"]:
-            return await _show_gate(message, bot, db, user)
-        return True
+        if user["is_verified"] and await _refresh_verified_user(bot, db, user):
+            return True
+        return await _show_gate(message, bot, db, user)
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -203,6 +236,9 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             await message.answer(screen("Temporarily unavailable", content["body"]))
             return
         user = await db.get_user(message.from_user.id)
+        if user and user["is_verified"]:
+            await _refresh_verified_user(bot, db, user)
+            user = await db.get_user(message.from_user.id)
         if user and not user["is_verified"]:
             if not await _show_gate(message, bot, db, user):
                 return
