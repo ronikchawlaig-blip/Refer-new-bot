@@ -193,7 +193,15 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
-            await conn.execute(
+
+            # Existing Railway databases may have an older audit_logs table.
+            # Add the columns used by the current bot without deleting old data.
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS admin_id BIGINT")
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS action TEXT")
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type TEXT")
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id TEXT")
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS details JSONB DEFAULT '{}'::jsonb")
+            await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")            await conn.execute(
                 "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"
             )
             referral_columns = await conn.fetchrow(
