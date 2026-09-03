@@ -121,6 +121,7 @@ def setup_admin_router(
             "stock_how_to_use": "rewards",
             "stock_codes_done": "rewards",
             "stock_toggle": "rewards",
+            "stock_points": "rewards",
             "milestones": "rewards",
             "inventory": "rewards",
             "history": "rewards",
@@ -326,9 +327,27 @@ def setup_admin_router(
                 admin_section(
                     [
                         [("➕ Add New Code", f"a:stock_add_code:{product['id']}")],
+                        [("💰 Change Required Points", f"a:stock_points:{product['id']}")],
                         [("📝 Add/Edit How to Use", f"a:stock_how_to_use:{product['id']}")],
                         [("← Stock List", "a:stock")],
                     ]
+                ),
+            )
+        elif action == "stock_points" and len(parts) > 2:
+            product_id = int(parts[2])
+            product = await db.get_stock_product(product_id)
+            if not product:
+                await callback.message.answer("This stock product no longer exists.")
+                return
+            sessions.set(admin_id, "stock_points", product_id=product_id)
+            await callback.message.answer(
+                f"Current points for <b>{product['name']}</b>: <b>{product['points_required']}</b>\n\n"
+                "Send an exact value like <code>5</code> or <code>10</code>.\n"
+                "You can also adjust it with <code>+2</code> or <code>-1</code>.",
+                reply_markup=ForceReply(
+                    force_reply=True,
+                    input_field_placeholder="5, 10, +2 or -1",
+                    selective=True,
                 ),
             )
         elif action == "stock_add_code" and len(parts) > 2:
@@ -907,6 +926,47 @@ def setup_admin_router(
                 )
             except (TypeError, ValueError):
                 await message.answer("Please send a valid code or reward content.")
+        elif flow == "stock_points":
+            try:
+                product_id = int(session["product_id"])
+                value_text = (body or "").strip()
+                if not value_text:
+                    raise ValueError
+                product = await db.get_stock_product(product_id)
+                if not product:
+                    await message.answer("This stock product no longer exists.")
+                    sessions.pop(message.from_user.id)
+                    return
+                old_points = int(product["points_required"])
+                relative = value_text.startswith(("+", "-"))
+                value = int(value_text)
+                if relative and value == 0:
+                    raise ValueError
+                if not relative and value < 0:
+                    raise ValueError
+                updated = await db.update_stock_points(product_id, value, relative=relative)
+                if not updated:
+                    await message.answer("This stock product no longer exists.")
+                    sessions.pop(message.from_user.id)
+                    return
+                new_points = int(updated["points_required"])
+                await db.audit(
+                    message.from_user.id,
+                    "stock_points_updated",
+                    "stock_product",
+                    str(product_id),
+                    {"old_points": old_points, "new_points": new_points, "input": value_text},
+                )
+                sessions.pop(message.from_user.id)
+                await message.answer(
+                    f"✓ <b>{updated['name']}</b> required points updated.\n"
+                    f"Old: <b>{old_points}</b> → New: <b>{new_points}</b>"
+                )
+            except (TypeError, ValueError):
+                await message.answer(
+                    "Send an exact non-negative value like <code>5</code> or <code>10</code>, "
+                    "or use an adjustment like <code>+2</code>/<code>-1</code>."
+                )
         elif flow == "stock_how_to_use":
             try:
                 product_id = int(session["product_id"])
