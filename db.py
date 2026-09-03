@@ -1049,6 +1049,47 @@ class Database:
         )
         return [dict(row) for row in rows]
 
+    async def user_delivery_history(self, user_id: int, limit: int = 30) -> list[dict[str, Any]]:
+        rows = await self._p().fetch(
+            """
+            SELECT category, claim_id, user_id, name, kind, code, status,
+                   claimed_at, delivered_at, points_spent, error
+            FROM (
+              SELECT 'Milestone'::text AS category, ra.reward_id::bigint AS claim_id,
+                     ra.user_id, r.name, r.kind,
+                     CASE
+                       WHEN r.text_content IS NOT NULL AND r.text_content <> '' THEN r.text_content
+                       WHEN r.file_id IS NOT NULL THEN '[' || COALESCE(r.kind, 'file') || ' attachment]'
+                       ELSE '—'
+                     END AS code,
+                     ra.status, ra.assigned_at AS claimed_at, ra.delivered_at,
+                     0::int AS points_spent, ra.error
+              FROM reward_assignments ra
+              JOIN rewards r ON r.id=ra.reward_id
+              WHERE ra.user_id=$1
+              UNION ALL
+              SELECT 'Stock'::text AS category, sc.id::bigint AS claim_id,
+                     sc.user_id, sp.name, COALESCE(si.kind, 'text') AS kind,
+                     CASE
+                       WHEN si.text_content IS NOT NULL AND si.text_content <> '' THEN si.text_content
+                       WHEN si.file_id IS NOT NULL THEN '[' || COALESCE(si.kind, 'file') || ' attachment]'
+                       ELSE '—'
+                     END AS code,
+                     sc.status, sc.claimed_at, sc.delivered_at,
+                     sc.points_spent, sc.error
+              FROM stock_claims sc
+              JOIN stock_products sp ON sp.id=sc.product_id
+              LEFT JOIN stock_items si ON si.id=sc.item_id
+              WHERE sc.user_id=$1
+            ) deliveries
+            ORDER BY claimed_at DESC
+            LIMIT $2
+            """,
+            user_id,
+            limit,
+        )
+        return [dict(row) for row in rows]
+
     async def list_stock_products(self, include_disabled: bool = False) -> list[dict[str, Any]]:
         where = "" if include_disabled else "WHERE enabled"
         rows = await self._p().fetch(
@@ -1280,11 +1321,11 @@ class Database:
         rows = await self._p().fetch(query, *args)
         return [dict(row) for row in rows]
 
-    async def adjust_user(self, user_id: int, field: str, delta: int) -> None:
+    async def adjust_user(self, user_id: int, field: str, delta: int) -> int | None:
         if field not in {"referral_count", "points"}:
             raise ValueError("Invalid adjustment field")
-        await self._p().execute(
-            f"UPDATE users SET {field}=GREATEST(0,{field}+$1) WHERE telegram_id=$2",
+        return await self._p().fetchval(
+            f"UPDATE users SET {field}=GREATEST(0,{field}+$1) WHERE telegram_id=$2 RETURNING {field}",
             delta,
             user_id,
         )
