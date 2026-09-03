@@ -365,9 +365,18 @@ def setup_admin_router(
             await admin_screen(callback, "Reward Inventory", body, back_keyboard("a:rewards"))
         elif action in {"history", "failed"}:
             query = (
-                "SELECT ra.*, r.name, r.kind FROM reward_assignments ra JOIN rewards r ON r.id=ra.reward_id "
-                + ("WHERE ra.status='failed' " if action == "failed" else "")
-                + "ORDER BY ra.assigned_at DESC LIMIT 15"
+                "SELECT source, item_id, user_id, name, status, assigned_at "
+                "FROM ("
+                "SELECT 'milestone'::text AS source, ra.reward_id AS item_id, ra.user_id, "
+                "r.name, ra.status, ra.assigned_at "
+                "FROM reward_assignments ra JOIN rewards r ON r.id=ra.reward_id "
+                "UNION ALL "
+                "SELECT 'stock'::text AS source, sc.product_id AS item_id, sc.user_id, "
+                "sp.name, sc.status, sc.claimed_at AS assigned_at "
+                "FROM stock_claims sc JOIN stock_products sp ON sp.id=sc.product_id"
+                ") deliveries "
+                + ("WHERE status='failed' " if action == "failed" else "")
+                + "ORDER BY assigned_at DESC LIMIT 15"
             )
             rows = await animated(
                 callback.message,
@@ -376,11 +385,16 @@ def setup_admin_router(
                 finish=False,
             )
             body = "\n".join(
-                f"• User <code>{r['user_id']}</code> · {r['name']} · {r['status']} · {r['assigned_at']:%d %b %H:%M}"
+                f"• {r['source'].title()} · User <code>{r['user_id']}</code> · "
+                f"{r['name']} · {r['status']} · {r['assigned_at']:%d %b %H:%M}"
                 for r in rows
             ) or "No delivery records."
             retry_rows = (
-                [[("Retry reward " + str(r["reward_id"]), f"a:retry:{r['reward_id']}")] for r in rows]
+                [
+                    [("Retry reward " + str(r["item_id"]), f"a:retry:{r['item_id']}")]
+                    for r in rows
+                    if r["source"] == "milestone"
+                ]
                 if action == "failed"
                 else []
             )
