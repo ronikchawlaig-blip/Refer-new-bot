@@ -109,6 +109,8 @@ def setup_admin_router(
             "user_banned": "users",
             "uclaims": "users",
             "points": "users",
+            "add_points": "users",
+            "remove_points": "users",
             "rewards": "rewards",
             "rew_add": "rewards",
             "rew_bulk": "rewards",
@@ -143,6 +145,20 @@ def setup_admin_router(
             admin_id, permission_by_action[action]
         ):
             await callback.message.answer("Your admin role does not have permission for this section.")
+            return
+        if action in {"add_points", "remove_points"}:
+            direction = 1 if action == "add_points" else -1
+            sessions.set(admin_id, "points_target", direction=direction)
+            await callback.message.answer(
+                "Send: Telegram User ID | points amount\n"
+                "Example: <code>7139194937 | 10</code>\n"
+                "Enter a positive amount; the selected button decides add or remove.",
+                reply_markup=ForceReply(
+                    force_reply=True,
+                    input_field_placeholder="user_id | amount",
+                    selective=True,
+                ),
+            )
             return
         if action == "bulk_confirm":
             session = sessions.pop(admin_id)
@@ -1101,6 +1117,37 @@ def setup_admin_router(
                 sessions.pop(message.from_user.id)
             except ValueError:
                 await message.answer("Send a numeric Telegram User ID.")
+        elif flow == "points_target":
+            try:
+                target_id, amount_text = [part.strip() for part in (body or "").split("|", 1)]
+                user_id = int(target_id)
+                amount = int(amount_text)
+                if user_id <= 0 or amount <= 0:
+                    raise ValueError
+                delta = session["direction"] * amount
+                new_value = await db.adjust_user(user_id, "points", delta)
+                if new_value is None:
+                    await message.answer("That Telegram User ID was not found.")
+                    sessions.pop(message.from_user.id)
+                    return
+                await db.audit(
+                    message.from_user.id,
+                    "user_value_adjusted",
+                    "user",
+                    str(user_id),
+                    {"field": "points", "delta": delta, "new_value": new_value},
+                )
+                sessions.pop(message.from_user.id)
+                action_label = "added" if delta > 0 else "removed"
+                await message.answer(
+                    f"✓ {abs(delta)} points {action_label} for User <code>{user_id}</code>.\n"
+                    f"Current points: <b>{new_value}</b>"
+                )
+            except ValueError:
+                await message.answer(
+                    "Use: <code>Telegram User ID | positive points amount</code>\n"
+                    "Example: <code>7139194937 | 10</code>"
+                )
         elif flow == "adjust":
             try:
                 delta = int((body or "").strip())
