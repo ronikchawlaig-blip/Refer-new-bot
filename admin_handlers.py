@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from html import escape
 from typing import Any, Awaitable, Callable
 
 from aiogram import Bot, F, Router
@@ -80,6 +81,7 @@ def setup_admin_router(
             "user_search": "users",
             "user_recent": "users",
             "user_banned": "users",
+            "uclaims": "users",
             "rewards": "rewards",
             "rew_add": "rewards",
             "rew_bulk": "rewards",
@@ -696,6 +698,33 @@ def setup_admin_router(
                 for row in history
             ) or "No reward history for this user."
             await status.edit_text(screen("User Reward History", body))
+        elif action == "uclaims" and len(parts) > 2:
+            status = await callback.message.answer("⠋ Loading claimed codes…")
+            history = await animated(
+                status,
+                lambda: db.user_delivery_history(int(parts[2]), limit=15),
+                "Loading claimed codes",
+                finish=False,
+            )
+            entries = []
+            for row in history:
+                code = escape(str(row["code"] or "—")[:700])
+                entry = (
+                    f"<b>{escape(str(row['category']))}</b> · {escape(str(row['name']))}\n"
+                    f"Code/detail: <code>{code}</code>\n"
+                    f"Claimed: {row['claimed_at']:%d %b %Y, %H:%M} · "
+                    f"Delivery: <b>{escape(str(row['status']))}</b>"
+                )
+                if row["points_spent"]:
+                    entry += f" · Points: {row['points_spent']}"
+                if row["error"]:
+                    entry += f"\nFailure: <code>{escape(str(row['error'])[:500])}</code>"
+                entries.append(entry)
+            body = "\n\n".join(entries) or "No claimed codes or delivery records for this user."
+            await status.edit_text(
+                screen("Claimed Codes & Delivery History", body),
+                reply_markup=back_keyboard(f"a:user_recent"),
+            )
         elif action in {"ban", "unban", "reset", "addref", "addpts"} and len(parts) > 2:
             user_id = int(parts[2])
             if action == "ban":
@@ -1026,6 +1055,7 @@ def setup_admin_router(
                     inline_keyboard=[
                         [InlineKeyboardButton(text="➕ Referrals", callback_data=f"a:addref:{user_id}"), InlineKeyboardButton(text="➕ Points", callback_data=f"a:addpts:{user_id}")],
                         [InlineKeyboardButton(text="🎁 Reward History", callback_data=f"a:urewards:{user_id}")],
+                        [InlineKeyboardButton(text="🧾 Claimed Codes", callback_data=f"a:uclaims:{user_id}")],
                         [InlineKeyboardButton(text="🚫 Ban" if not user["banned"] else "✅ Unban", callback_data=f"a:{'ban' if not user['banned'] else 'unban'}:{user_id}")],
                         [InlineKeyboardButton(text="🔄 Reset Progress", callback_data=f"a:confirm_reset:{user_id}")],
                     ]
@@ -1047,20 +1077,28 @@ def setup_admin_router(
         elif flow == "adjust":
             try:
                 delta = int((body or "").strip())
+                user_id = session["user_id"]
+                field = session["field"]
 
-                async def adjust_user() -> None:
-                    await db.adjust_user(session["user_id"], session["field"], delta)
-                    await db.audit(
-                        message.from_user.id,
-                        "user_value_adjusted",
-                        "user",
-                        str(session["user_id"]),
-                        {"field": session["field"], "delta": delta},
-                    )
+                async def adjust_user() -> int:
+                    updated_value = await db.adjust_user(user_id, field, delta)
+                    if updated_value is None:
+                        raise ValueError("User not found")
+                    return int(updated_value)
 
-                status, _ = await animate_message("Updating user data", adjust_user)
+                status, new_value = await animate_message("Updating user data", adjust_user)
                 sessions.pop(message.from_user.id)
-                await status.edit_text("✓ User value updated and logged.")
+                await db.audit(
+                    message.from_user.id,
+                    "user_value_adjusted",
+                    "user",
+                    str(user_id),
+                    {"field": field, "delta": delta, "new_value": new_value},
+                )
+                label = "Points" if field == "points" else "Referrals"
+                await status.edit_text(
+                    f"✓ {label} updated and logged.\nCurrent {label.lower()}: <b>{new_value}</b>"
+                )
             except ValueError:
                 await message.answer("Send a whole number.")
 
