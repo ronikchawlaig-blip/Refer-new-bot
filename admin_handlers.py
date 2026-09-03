@@ -7,7 +7,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import Bot, F, Router
 from aiogram.dispatcher.event.bases import UNHANDLED
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ForceReply, Message
 
 from db import Database
 from services import animated, send_reward
@@ -64,6 +64,31 @@ def setup_admin_router(
             screen("Admin Home", "Select a section to manage the bot."),
             reply_markup=keyboard,
         )
+
+    @router.callback_query(F.data.startswith("a:addpts:"))
+    async def add_points_prompt(callback: CallbackQuery) -> None:
+        admin_id = callback.from_user.id
+        if not await allowed(admin_id):
+            await callback.answer("Not authorized.", show_alert=True)
+            return
+        try:
+            user_id = int((callback.data or "").rsplit(":", 1)[-1])
+        except ValueError:
+            await callback.answer("Invalid user ID.", show_alert=True)
+            return
+        sessions.set(admin_id, "adjust", user_id=user_id, field="points")
+        await callback.answer("Enter the points amount below.")
+        if callback.message:
+            await callback.message.answer(
+                f"Enter points adjustment for User <code>{user_id}</code>.\n"
+                "Use a positive number to add points or a negative number to subtract them.",
+                reply_markup=ForceReply(
+                    force_reply=True,
+                    input_field_placeholder="e.g. 10 or -5",
+                    selective=True,
+                ),
+            )
+
 
     @router.callback_query(F.data.startswith("a:"))
     async def callbacks(callback: CallbackQuery) -> None:
