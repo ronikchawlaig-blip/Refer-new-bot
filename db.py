@@ -1223,24 +1223,27 @@ class Database:
         self, claim_id: int, user_id: int, delivered: bool, error: str = ""
     ) -> None:
         status = "delivered" if delivered else "failed"
-        await self._p().execute(
-            "UPDATE stock_claims SET status=$1, delivered_at=CASE WHEN $2 THEN NOW() END, "
-            "error=$3, attempt_count=attempt_count+1 "
-            "WHERE id=$4 AND user_id=$5",
-            status,
-            delivered,
-            error[:1000],
-            claim_id,
-            user_id,
-        )
-        await self._p().execute(
-            "UPDATE stock_items SET status=$1 WHERE id=("
-            "SELECT item_id FROM stock_claims WHERE id=$2 AND user_id=$3) "
-            "AND status='claimed'",
-            status,
-            claim_id,
-            user_id,
-        )
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE stock_claims SET status=$1, delivered_at=CASE WHEN $2 THEN NOW() END, "
+                    "error=$3, attempt_count=attempt_count+1 "
+                    "WHERE id=$4 AND user_id=$5",
+                    status,
+                    delivered,
+                    error[:1000],
+                    claim_id,
+                    user_id,
+                )
+                # stock_items has no delivered status; a delivered code remains claimed.
+                if not delivered:
+                    await conn.execute(
+                        "UPDATE stock_items SET status='failed' WHERE id=("
+                        "SELECT item_id FROM stock_claims WHERE id=$1 AND user_id=$2) "
+                        "AND status='claimed'",
+                        claim_id,
+                        user_id,
+                    )
 
     async def user_claim_history(self, user_id: int) -> list[dict[str, Any]]:
         rows = await self._p().fetch(
