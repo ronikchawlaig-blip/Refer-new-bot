@@ -108,6 +108,10 @@ def admin_home() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="🎯 Referrals", callback_data="a:referrals"),
             ],
             [
+                InlineKeyboardButton(text="➕ Add Points", callback_data="a:add_points"),
+                InlineKeyboardButton(text="➖ Remove Points", callback_data="a:remove_points"),
+            ],
+            [
                 InlineKeyboardButton(text="🔒 Force Subscribe", callback_data="a:force"),
                 InlineKeyboardButton(text="📝 Content", callback_data="a:content"),
             ],
