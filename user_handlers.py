@@ -597,29 +597,38 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             return
         try:
             await send_reward(bot, callback.from_user.id, claim)
-            await db.mark_stock_claim(claim["id"], callback.from_user.id, True)
-            try:
-                await send_stock_how_to_use(
-                    bot,
-                    callback.from_user.id,
-                    claim.get("how_to_use"),
-                )
-            except Exception:
-                log.exception("Unable to send How to Use for stock claim %s", claim["id"])
-            await callback.message.edit_text(
-                f"✅ <b>{escape(str(claim['name']))}</b> claimed successfully.\n\n"
-                f"Points spent: <b>{claim['points_spent']}</b>\n"
-                f"Remaining points: <b>{claim['remaining_points']}</b>\n\n"
-                "Your reward has been sent.",
-                reply_markup=stock_product_keyboard(claim["product_id"]),
-            )
         except Exception as exc:
-            await db.mark_stock_claim(claim["id"], callback.from_user.id, False, str(exc))
+            try:
+                await db.mark_stock_claim(claim["id"], callback.from_user.id, False, str(exc))
+            except Exception:
+                log.exception("Unable to record failed stock delivery %s", claim["id"])
             await callback.message.edit_text(
                 "⚠️ Your claim was reserved, but delivery failed. "
                 "Please contact Support so an admin can retry it.",
                 reply_markup=stock_product_keyboard(claim["product_id"]),
             )
+            return
+
+        try:
+            await db.mark_stock_claim(claim["id"], callback.from_user.id, True)
+        except Exception:
+            # The reward was already sent; never report a delivered reward as failed.
+            log.exception("Unable to record successful stock delivery %s", claim["id"])
+        try:
+            await send_stock_how_to_use(
+                bot,
+                callback.from_user.id,
+                claim.get("how_to_use"),
+            )
+        except Exception:
+            log.exception("Unable to send How to Use for stock claim %s", claim["id"])
+        await callback.message.edit_text(
+            f"✅ <b>{escape(str(claim['name']))}</b> claimed successfully.\n\n"
+            f"Points spent: <b>{claim['points_spent']}</b>\n"
+            f"Remaining points: <b>{claim['remaining_points']}</b>\n\n"
+            "Your reward has been sent.",
+            reply_markup=stock_product_keyboard(claim["product_id"]),
+        )
 
     @router.callback_query(F.data.startswith("u:stock:"))
     async def stock_product(callback: CallbackQuery) -> None:
