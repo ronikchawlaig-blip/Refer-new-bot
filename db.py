@@ -1168,6 +1168,18 @@ class Database:
             file_id,
         )
 
+    async def update_stock_points(
+        self, product_id: int, value: int, relative: bool = False
+    ) -> dict[str, Any] | None:
+        expression = "GREATEST(0, points_required + $1)" if relative else "$1"
+        row = await self._p().fetchrow(
+            f"UPDATE stock_products SET points_required={expression} "
+            "WHERE id=$2 RETURNING id,name,points_required",
+            value,
+            product_id,
+        )
+        return dict(row) if row else None
+
     async def update_stock_how_to_use(self, product_id: int, how_to_use: str) -> bool:
         updated = await self._p().execute(
             "UPDATE stock_products SET how_to_use=$1 WHERE id=$2",
