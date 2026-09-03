@@ -66,6 +66,7 @@ def setup_admin_router(
         )
 
     @router.callback_query(F.data.startswith("a:addpts:"))
+    @router.callback_query(F.data.startswith("a:points:"))
     async def add_points_prompt(callback: CallbackQuery) -> None:
         admin_id = callback.from_user.id
         if not await allowed(admin_id):
@@ -107,6 +108,7 @@ def setup_admin_router(
             "user_recent": "users",
             "user_banned": "users",
             "uclaims": "users",
+            "points": "users",
             "rewards": "rewards",
             "rew_add": "rewards",
             "rew_bulk": "rewards",
@@ -750,7 +752,7 @@ def setup_admin_router(
                 screen("Claimed Codes & Delivery History", body),
                 reply_markup=back_keyboard(f"a:user_recent"),
             )
-        elif action in {"ban", "unban", "reset", "addref", "addpts"} and len(parts) > 2:
+        elif action in {"ban", "unban", "reset", "addref", "addpts", "points"} and len(parts) > 2:
             user_id = int(parts[2])
             if action == "ban":
                 await callback.message.answer(
@@ -766,7 +768,7 @@ def setup_admin_router(
                 return
             if action == "unban":
                 await db.set_banned(user_id, False)
-            elif action == "addref" or action == "addpts":
+            elif action == "addref" or action == "addpts" or action == "points":
                 sessions.set(admin_id, "adjust", user_id=user_id, field="referral_count" if action == "addref" else "points")
                 await callback.message.answer("Send a positive or negative number.")
                 return
@@ -1078,7 +1080,7 @@ def setup_admin_router(
                 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
                 keyboard = InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [InlineKeyboardButton(text="➕ Referrals", callback_data=f"a:addref:{user_id}"), InlineKeyboardButton(text="➕ Points", callback_data=f"a:addpts:{user_id}")],
+                        [InlineKeyboardButton(text="➕ Referrals", callback_data=f"a:addref:{user_id}"), InlineKeyboardButton(text="➕ Points", callback_data=f"a:points:{user_id}")],
                         [InlineKeyboardButton(text="🎁 Reward History", callback_data=f"a:urewards:{user_id}")],
                         [InlineKeyboardButton(text="🧾 Claimed Codes", callback_data=f"a:uclaims:{user_id}")],
                         [InlineKeyboardButton(text="🚫 Ban" if not user["banned"] else "✅ Unban", callback_data=f"a:{'ban' if not user['banned'] else 'unban'}:{user_id}")],
