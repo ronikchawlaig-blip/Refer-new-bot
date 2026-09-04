@@ -559,7 +559,11 @@ def setup_admin_router(
             sessions.set(admin_id, "force_remove")
             await callback.message.answer("Send the channel database ID to remove. This requires confirmation in the next step.")
         elif action == "content":
-            keys = ["welcome", "maintenance", "disclaimer", "force_subscribe", "support", "how_it_works", "reward_success", "reward_empty", "error"]
+            keys = [
+                "welcome", "maintenance", "disclaimer", "force_subscribe", "support",
+                "how_it_works", "reward_success", "reward_empty", "error",
+                "verification_complete", "verification_rejected",
+            ]
             rows = [
                 [
                     (f"✏️ {key.replace('_',' ').title()}", f"a:cont_edit:{key}"),
