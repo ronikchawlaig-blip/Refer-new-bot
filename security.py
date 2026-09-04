@@ -38,8 +38,8 @@ def verify_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: i
     received_hash = fields.pop("hash", "")
     if len(received_hash) != 64 or any(char not in "0123456789abcdefABCDEF" for char in received_hash):
         raise InitDataError("missing init data hash")
-    data_check_string = "\\n".join(f"{key}={fields[key]}" for key in sorted(fields))
-    secret_key = hmac.new(bot_token.encode("utf-8"), b"WebAppData", hashlib.sha256).digest()
+    data_check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
+    secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
     expected_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected_hash, received_hash.lower()):
         raise InitDataError("invalid init data signature")
