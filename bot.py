@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 
+import asyncpg
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -24,9 +25,21 @@ async def main() -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         stream=sys.stdout,
     )
-    db = Database(settings.database_url)
-    await db.connect()
-    bot = Bot(settings.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    polling_lock = await asyncpg.connect(settings.database_url)
+    try:
+        lock_acquired = await polling_lock.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext($1))",
+            "refer-new-bot:telegram-polling",
+        )
+        if not lock_acquired:
+            logging.getLogger(__name__).error(
+                "Another bot instance already owns the Telegram polling lock; exiting."
+            )
+            return
+
+        db = Database(settings.database_url)
+        await db.connect()
+        bot = Bot(settings.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
     miniapp_server = MiniAppServer(
         db,
@@ -67,6 +80,8 @@ async def main() -> None:
             await asyncio.gather(worker, return_exceptions=True)
         await bot.session.close()
         await db.close()
+    finally:
+        await polling_lock.close()
 
 
 if __name__ == "__main__":
