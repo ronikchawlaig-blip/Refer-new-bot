@@ -6,6 +6,7 @@ from html import escape
 from typing import Any
 
 from aiogram import Bot, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
@@ -282,6 +283,10 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         )
         latest = await db.get_user(callback.from_user.id)
         if latest and latest["is_verified"]:
+            try:
+                await callback.message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
             support_text = await db.get_setting("support_button_text", "💬 Support")
             await callback.message.answer(
                 "✓ Access verified. Welcome in.",
