@@ -196,7 +196,7 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
     referrer_id = await db.complete_gate(user["telegram_id"])
     if referrer_id:
         await _notify_referral_success(bot, db, referrer_id, user)
-    await status.edit_text("✓ Access verified.")
+    await status.edit_text("✓ Access verified.", reply_markup=None)
     return True
 
 
@@ -334,7 +334,8 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         if referrer_id:
             await _notify_referral_success(bot, db, referrer_id, user)
         await callback.message.edit_text(
-            f"✓ Accepted. Your access is now active.\n{progress_bar(100)}"
+            f"✓ Accepted. Your access is now active.\n{progress_bar(100)}",
+            reply_markup=None,
         )
         await callback.message.answer(
             "Choose what you want to do next.",
