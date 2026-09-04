@@ -12,6 +12,7 @@ from admin_handlers import setup_admin_router
 from config import load_settings
 from db import Database
 from services import broadcast_loop
+from miniapp import MiniAppServer
 from states import SessionStore
 from user_handlers import setup_user_router
 
@@ -27,6 +28,13 @@ async def main() -> None:
     await db.connect()
     bot = Bot(settings.token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
+    miniapp_server = MiniAppServer(
+        db,
+        settings.token,
+        settings.verification_hash_secret,
+        settings.ipinfo_token,
+        settings.trust_proxy,
+    )
     sessions = SessionStore()
     worker: asyncio.Task[None] | None = None
 
@@ -35,12 +43,19 @@ async def main() -> None:
         return None
 
     dp.include_router(setup_admin_router(db, bot, sessions, wake_broadcast_worker))
-    dp.include_router(setup_user_router(db, bot, sessions, settings.bot_name))
+    dp.include_router(
+        setup_user_router(db, bot, sessions, settings.bot_name, settings.miniapp_url)
+    )
     worker = asyncio.create_task(broadcast_loop(bot, db))
     try:
+        try:
+            await miniapp_server.start(settings.web_host, settings.web_port)
+        except Exception:
+            logging.getLogger(__name__).exception("Mini App server could not start; bot will continue")
         await bot.delete_webhook(drop_pending_updates=False)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        await miniapp_server.stop()
         if worker:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
