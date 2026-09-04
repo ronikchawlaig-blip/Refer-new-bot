@@ -15,6 +15,7 @@ from states import SessionStore
 from ui import (
     admin_home,
     disclaimer_keyboard,
+    device_verification_keyboard,
     gate_keyboard,
     main_menu,
     progress_bar,
@@ -151,7 +152,7 @@ async def _activate_user(user_id: int, db: Database) -> tuple[str, bool, int | N
     return support_text, await db.is_admin(user_id), referrer_id
 
 
-async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, Any]) -> bool:
+async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, Any], miniapp_url: str = "") -> bool:
     status = await message.answer("⠋ Checking access…")
     _, missing = await animated(
         status,
@@ -164,7 +165,7 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         content = await db.get_content("force_subscribe")
         await status.edit_text(
             screen("Complete access", content["body"]),
-            reply_markup=gate_keyboard(missing),
+            reply_markup=gate_keyboard(missing, miniapp_url),
         )
         return False
     await db.mark_subscribed(user["telegram_id"])
@@ -174,6 +175,16 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         await status.edit_text(
             screen("One important step", disclaimer["body"]),
             reply_markup=disclaimer_keyboard(),
+        )
+        return False
+    if miniapp_url and not await db.device_verification_passed(user["telegram_id"]):
+        await status.edit_text(
+            screen(
+                "Verify your device",
+                "Complete the secure Telegram Mini App verification before continuing. "
+                "Your referral will only be credited after verification passes.",
+            ),
+            reply_markup=device_verification_keyboard(miniapp_url),
         )
         return False
     referrer_id = await db.complete_gate(user["telegram_id"])
@@ -194,7 +205,7 @@ async def _home(message: Message, db: Database, bot_name: str, support_text: str
     )
 
 
-def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: str) -> Router:
+def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: str, miniapp_url: str = "") -> Router:
     router = Router(name="users")
 
     async def guard(message: Message) -> bool:
@@ -210,7 +221,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             return False
         if user["is_verified"] and await _refresh_verified_user(bot, db, user):
             return True
-        return await _show_gate(message, bot, db, user)
+        return await _show_gate(message, bot, db, user, miniapp_url)
 
     @router.message(CommandStart())
     async def start(message: Message) -> None:
@@ -257,7 +268,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             return
         await animated(
             callback.message,
-            lambda: _show_gate(callback.message, bot, db, user),
+            lambda: _show_gate(callback.message, bot, db, user, miniapp_url),
             "Checking subscriptions",
         )
         latest = await db.get_user(callback.from_user.id)
