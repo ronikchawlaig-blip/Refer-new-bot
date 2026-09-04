@@ -159,8 +159,14 @@ class MiniAppServer:
         init_data = body.get("init_data")
         try:
             verified = verify_telegram_init_data(str(init_data or ""), self.bot_token, self.max_init_data_age)
-        except InitDataError:
-            return self._error("Telegram verification expired or is invalid. Reopen the Mini App from the bot.", 401)
+        except InitDataError as exc:
+            log.warning("Telegram init data rejected: %s", exc)
+            message = (
+                "Telegram session expired. Reopen Verify Device from the bot."
+                if str(exc) == "expired init data"
+                else "Telegram session signature could not be verified. Open the Mini App from the bot."
+            )
+            return self._error(message, 401)
         fingerprint_hash = str(body.get("fingerprint_hash") or "").lower()
         if not is_sha256(fingerprint_hash):
             return self._error("Verification data is invalid. Please try again.")
@@ -253,12 +259,20 @@ class MiniAppServer:
         init_data = str(body.get("init_data") or "")
         fingerprint_hash = str(body.get("fingerprint_hash") or "").lower()
         install_id = request.cookies.get(COOKIE_NAME)
-        if not token or len(token) > 256 or not is_sha256(fingerprint_hash) or not install_id:
-            return self._error("Verification session is invalid. Reopen the Mini App.", 400)
+        if not token or len(token) > 256 or not is_sha256(fingerprint_hash):
+            return self._error("Verification data is invalid. Reopen the Mini App.", 400)
+        if not install_id:
+            return self._error("The verification browser session was not preserved. Close and reopen Verify Device from the bot.", 400)
         try:
             verified = verify_telegram_init_data(init_data, self.bot_token, self.max_init_data_age)
-        except InitDataError:
-            return self._error("Telegram verification expired or is invalid. Reopen the Mini App.", 401)
+        except InitDataError as exc:
+            log.warning("Telegram init data rejected: %s", exc)
+            message = (
+                "Telegram session expired. Reopen Verify Device from the bot."
+                if str(exc) == "expired init data"
+                else "Telegram session signature could not be verified. Open the Mini App from the bot."
+            )
+            return self._error(message, 401)
         result = await self.db.finish_verification(
             privacy_hash(token, self.hash_secret) or "",
             verified.user_id,
@@ -274,7 +288,7 @@ class MiniAppServer:
             return self._error("We could not approve this verification. Contact Support if this is a mistake.", 403)
         if result["status"] == "expired":
             return self._error("This verification session expired. Reopen the Mini App.", 410)
-        return self._error("Verification session is invalid. Reopen the Mini App.", 400)
+        return self._error("The verification browser session changed. Close and reopen Verify Device from the bot.", 400)
 
     async def verification_status(self, request: web.Request) -> web.Response:
         ip = self._client_ip(request)
@@ -283,7 +297,13 @@ class MiniAppServer:
         body = await self._json(request)
         try:
             verified = verify_telegram_init_data(str(body.get("init_data") or ""), self.bot_token, self.max_init_data_age)
-        except InitDataError:
-            return self._error("Telegram verification expired or is invalid. Reopen the Mini App.", 401)
+        except InitDataError as exc:
+            log.warning("Telegram init data rejected: %s", exc)
+            message = (
+                "Telegram session expired. Reopen Verify Device from the bot."
+                if str(exc) == "expired init data"
+                else "Telegram session signature could not be verified. Open the Mini App from the bot."
+            )
+            return self._error(message, 401)
         status = await self.db.device_verification_status(verified.user_id)
         return web.json_response({"status": status}, headers={"Cache-Control": "no-store"})
