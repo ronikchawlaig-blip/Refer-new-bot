@@ -6,6 +6,7 @@ import logging
 import base64
 import zlib
 from typing import Any
+from uuid import UUID
 
 from aiohttp import ClientSession, ClientTimeout, web
 
@@ -160,11 +161,13 @@ class MiniAppServer:
             verified = verify_telegram_init_data(str(init_data or ""), self.bot_token, self.max_init_data_age)
         except InitDataError:
             return self._error("Telegram verification expired or is invalid. Reopen the Mini App from the bot.", 401)
-        fingerprint_hash = body.get("fingerprint_hash", "")
-        if fingerprint_hash and not is_sha256(fingerprint_hash):
+        fingerprint_hash = str(body.get("fingerprint_hash") or "").lower()
+        if not is_sha256(fingerprint_hash):
             return self._error("Verification data is invalid. Please try again.")
         client_nonce = str(body.get("client_nonce") or "")
-        if len(client_nonce) > 128:
+        try:
+            UUID(client_nonce)
+        except (ValueError, TypeError, AttributeError):
             return self._error("Verification data is invalid. Please try again.")
         user = await self.db.get_user(verified.user_id)
         if not user or user["banned"]:
@@ -248,7 +251,9 @@ class MiniAppServer:
         body = await self._json(request)
         token = str(body.get("session_token") or "")
         init_data = str(body.get("init_data") or "")
-        if not token or len(token) > 256:
+        fingerprint_hash = str(body.get("fingerprint_hash") or "").lower()
+        install_id = request.cookies.get(COOKIE_NAME)
+        if not token or len(token) > 256 or not is_sha256(fingerprint_hash) or not install_id:
             return self._error("Verification session is invalid. Reopen the Mini App.", 400)
         try:
             verified = verify_telegram_init_data(init_data, self.bot_token, self.max_init_data_age)
@@ -258,6 +263,8 @@ class MiniAppServer:
             privacy_hash(token, self.hash_secret) or "",
             verified.user_id,
             privacy_hash(init_data, self.hash_secret) or "",
+            privacy_hash(install_id, self.hash_secret) or "",
+            fingerprint_hash,
         )
         if result["status"] == "passed":
             return web.json_response({"status": "passed", "message": "Device verification complete."}, headers={"Cache-Control": "no-store"})
