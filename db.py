@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE TABLE IF NOT EXISTS security_verification_attempts (
   id BIGSERIAL PRIMARY KEY,
-  session_hash TEXT PRIMARY KEY,
+  session_hash TEXT NOT NULL UNIQUE,
   init_data_hash TEXT NOT NULL,
   telegram_user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
   install_hash TEXT,
