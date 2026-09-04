@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS users (
   force_subscribed BOOLEAN NOT NULL DEFAULT FALSE,
   disclaimer_accepted BOOLEAN NOT NULL DEFAULT FALSE,
   is_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  device_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  device_verified_at TIMESTAMPTZ,
   banned BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE TABLE IF NOT EXISTS referrals (
@@ -149,6 +151,53 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   details JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS security_verification_attempts (
+  id BIGSERIAL PRIMARY KEY,
+  session_hash TEXT PRIMARY KEY,
+  init_data_hash TEXT NOT NULL,
+  telegram_user_id BIGINT NOT NULL REFERENCES users(telegram_id) ON DELETE CASCADE,
+  install_hash TEXT,
+  fingerprint_hash TEXT,
+  ip_hash TEXT,
+  network_hash TEXT,
+  network_label TEXT,
+  provider_status TEXT NOT NULL DEFAULT 'unavailable',
+  vpn BOOLEAN,
+  proxy BOOLEAN,
+  tor BOOLEAN,
+  hosting BOOLEAN,
+  risk_score INTEGER NOT NULL DEFAULT 0 CHECK (risk_score BETWEEN 0 AND 100),
+  risk_level TEXT NOT NULL CHECK (risk_level IN ('low','medium','high')),
+  risk_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','passed','medium','suspicious','expired','rejected')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS security_attempts_user_created_idx
+  ON security_verification_attempts(telegram_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS security_attempts_install_idx
+  ON security_verification_attempts(install_hash, telegram_user_id);
+CREATE INDEX IF NOT EXISTS security_attempts_fingerprint_idx
+  ON security_verification_attempts(fingerprint_hash, telegram_user_id);
+CREATE INDEX IF NOT EXISTS security_attempts_ip_idx
+  ON security_verification_attempts(ip_hash, telegram_user_id);
+CREATE INDEX IF NOT EXISTS security_attempts_network_idx
+  ON security_verification_attempts(network_hash, telegram_user_id);
+CREATE TABLE IF NOT EXISTS security_rate_limits (
+  key TEXT PRIMARY KEY,
+  window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  request_count INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS security_events (
+  id BIGSERIAL PRIMARY KEY,
+  telegram_user_id BIGINT REFERENCES users(telegram_id) ON DELETE SET NULL,
+  event_type TEXT NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS security_events_created_idx
+  ON security_events(created_at DESC);
 """
 
 LEGACY_ID_MIGRATION = """
@@ -347,6 +396,8 @@ class Database:
         )
         async with self.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS device_verified BOOLEAN NOT NULL DEFAULT FALSE")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS device_verified_at TIMESTAMPTZ")
             await conn.execute(LEGACY_USERS_MIGRATION)
             # Some legacy Railway databases kept referred_id/status but omitted
             # the owner column. Add it without deleting or rewriting old rows.
@@ -759,6 +810,231 @@ class Database:
             user_id,
         )
 
+
+    async def consume_rate_limit(self, key: str, limit: int, window_seconds: int) -> bool:
+        """Atomically consume one request from a database-backed rolling window."""
+        if limit <= 0:
+            return False
+        now = datetime.now().astimezone()
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT window_started_at, request_count FROM security_rate_limits WHERE key=$1 FOR UPDATE",
+                    key,
+                )
+                if not row:
+                    await conn.execute(
+                        "INSERT INTO security_rate_limits (key, window_started_at, request_count) VALUES ($1,NOW(),1)",
+                        key,
+                    )
+                    return True
+                started = row["window_started_at"]
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=now.tzinfo)
+                if (now - started).total_seconds() >= window_seconds:
+                    await conn.execute(
+                        "UPDATE security_rate_limits SET window_started_at=NOW(), request_count=1 WHERE key=$1",
+                        key,
+                    )
+                    return True
+                if int(row["request_count"]) >= limit:
+                    return False
+                await conn.execute(
+                    "UPDATE security_rate_limits SET request_count=request_count+1 WHERE key=$1",
+                    key,
+                )
+                return True
+
+    async def verification_risk_context(
+        self,
+        user_id: int,
+        install_hash: str | None,
+        fingerprint_hash: str | None,
+        ip_hash: str | None,
+        network_hash: str | None,
+    ) -> dict[str, Any]:
+        """Return correlation counts; raw IP and fingerprint values never enter this query."""
+        row = await self._p().fetchrow(
+            """
+            SELECT
+              (SELECT COUNT(DISTINCT telegram_user_id)::int FROM security_verification_attempts
+               WHERE install_hash=$1 AND telegram_user_id<>$5) AS same_device_accounts,
+              (SELECT COUNT(DISTINCT telegram_user_id)::int FROM security_verification_attempts
+               WHERE fingerprint_hash=$2 AND telegram_user_id<>$5) AS same_fingerprint_accounts,
+              (SELECT COUNT(DISTINCT telegram_user_id)::int FROM security_verification_attempts
+               WHERE ip_hash=$3 AND telegram_user_id<>$5) AS same_ip_accounts,
+              (SELECT COUNT(DISTINCT telegram_user_id)::int FROM security_verification_attempts
+               WHERE network_hash=$4 AND telegram_user_id<>$5) AS same_network_accounts,
+              (SELECT COUNT(*)::int FROM security_verification_attempts
+               WHERE telegram_user_id=$5 AND created_at >= NOW()-INTERVAL '1 hour') AS recent_user_attempts
+            """,
+            install_hash,
+            fingerprint_hash,
+            ip_hash,
+            network_hash,
+            user_id,
+        )
+        owner_expression = self._referral_owner_expression()
+        user_expression = self._referral_user_expression()
+        referrer_id = await self._p().fetchval(
+            f"SELECT {owner_expression} FROM referrals WHERE {user_expression}=$1 LIMIT 1",
+            user_id,
+        )
+        referral_cycle = False
+        if referrer_id:
+            referral_cycle = bool(await self._p().fetchval(
+                f"""
+                WITH RECURSIVE referral_chain(node, depth) AS (
+                  SELECT $1::bigint, 0
+                  UNION ALL
+                  SELECT {user_expression}, referral_chain.depth + 1
+                  FROM referrals JOIN referral_chain
+                    ON {owner_expression}=referral_chain.node
+                  WHERE referral_chain.depth < 20
+                )
+                SELECT EXISTS (SELECT 1 FROM referral_chain WHERE node=$2::bigint)
+                """,
+                user_id,
+                referrer_id,
+            ))
+        context = dict(row)
+        context["referrer_id"] = int(referrer_id) if referrer_id else None
+        context["referral_cycle"] = referral_cycle
+        return context
+
+    async def create_verification_attempt(
+        self,
+        session_hash: str,
+        init_data_hash: str,
+        user_id: int,
+        install_hash: str | None,
+        fingerprint_hash: str | None,
+        ip_hash: str | None,
+        network_hash: str | None,
+        network_label: str | None,
+        provider_status: str,
+        provider_flags: dict[str, bool],
+        risk_score: int,
+        risk_level: str,
+        risk_reasons: list[str],
+        expires_seconds: int,
+    ) -> None:
+        await self._p().execute(
+            """
+            INSERT INTO security_verification_attempts
+              (session_hash,init_data_hash,telegram_user_id,install_hash,fingerprint_hash,ip_hash,
+               network_hash,network_label,provider_status,vpn,proxy,tor,hosting,risk_score,risk_level,
+               risk_reasons,expires_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
+                    NOW()+($17 * INTERVAL '1 second'))
+            """,
+            session_hash,
+            init_data_hash,
+            user_id,
+            install_hash,
+            fingerprint_hash,
+            ip_hash,
+            network_hash,
+            (str(network_label)[:100] if network_label else None),
+            provider_status[:40],
+            bool(provider_flags.get("vpn")),
+            bool(provider_flags.get("proxy")),
+            bool(provider_flags.get("tor")),
+            bool(provider_flags.get("hosting")),
+            max(0, min(100, int(risk_score))),
+            risk_level if risk_level in {"low", "medium", "high"} else "high",
+            json.dumps(risk_reasons[:12]),
+            max(60, int(expires_seconds)),
+        )
+
+    async def finish_verification(
+        self, session_hash: str, user_id: int, init_data_hash: str
+    ) -> dict[str, Any]:
+        async with self._p().acquire() as conn:
+            async with conn.transaction():
+                attempt = await conn.fetchrow(
+                    "SELECT * FROM security_verification_attempts WHERE session_hash=$1 "
+                    "AND telegram_user_id=$2 AND init_data_hash=$3 FOR UPDATE",
+                    session_hash,
+                    user_id,
+                    init_data_hash,
+                )
+                if not attempt:
+                    return {"status": "invalid"}
+                if attempt["status"] != "pending":
+                    return {"status": attempt["status"]}
+                if attempt["expires_at"] <= datetime.now().astimezone():
+                    await conn.execute(
+                        "UPDATE security_verification_attempts SET status='expired', completed_at=NOW() WHERE session_hash=$1",
+                        session_hash,
+                    )
+                    return {"status": "expired"}
+                level = attempt["risk_level"]
+                final_status = "passed" if level == "low" else "medium" if level == "medium" else "suspicious"
+                await conn.execute(
+                    "UPDATE security_verification_attempts SET status=$2, completed_at=NOW() WHERE session_hash=$1",
+                    session_hash,
+                    final_status,
+                )
+                if final_status == "passed":
+                    await conn.execute(
+                        "UPDATE users SET device_verified=TRUE, device_verified_at=NOW() WHERE telegram_id=$1",
+                        user_id,
+                    )
+                await conn.execute(
+                    "INSERT INTO security_events (telegram_user_id,event_type,details) VALUES ($1,$2,$3::jsonb)",
+                    user_id,
+                    "device_verification_" + final_status,
+                    json.dumps({"attempt_id": attempt["id"], "risk_score": attempt["risk_score"]}),
+                )
+                return {"status": final_status}
+
+    async def device_verification_passed(self, user_id: int) -> bool:
+        return bool(await self._p().fetchval(
+            "SELECT device_verified FROM users WHERE telegram_id=$1", user_id
+        ))
+
+    async def device_verification_status(self, user_id: int) -> str:
+        if await self.device_verification_passed(user_id):
+            return "passed"
+        status = await self._p().fetchval(
+            "SELECT status FROM security_verification_attempts WHERE telegram_user_id=$1 "
+            "ORDER BY created_at DESC LIMIT 1",
+            user_id,
+        )
+        return str(status or "not_started")
+
+    async def suspicious_verifications(self, limit: int = 20) -> list[dict[str, Any]]:
+        owner_expression = self._referral_owner_expression()
+        user_expression = self._referral_user_expression()
+        for column in ("referrer_id", "inviter_user_id"):
+            owner_expression = owner_expression.replace(column, "r." + column)
+        for column in ("current_referred_id", "invited_user_id", "referred_user_id", "referred_id"):
+            user_expression = user_expression.replace(column, "r." + column)
+        rows = await self._p().fetch(
+            f"""
+            SELECT va.id, va.telegram_user_id, va.risk_level, va.risk_score, va.risk_reasons,
+                   va.status, va.provider_status, va.vpn, va.proxy, va.tor, va.hosting,
+                   va.network_label, va.created_at,
+                   {owner_expression} AS referrer_id,
+                   (SELECT COUNT(DISTINCT x.telegram_user_id)::int FROM security_verification_attempts x
+                    WHERE x.install_hash=va.install_hash AND x.telegram_user_id<>va.telegram_user_id) AS linked_device_count,
+                   (SELECT COUNT(DISTINCT x.telegram_user_id)::int FROM security_verification_attempts x
+                    WHERE x.fingerprint_hash=va.fingerprint_hash AND x.telegram_user_id<>va.telegram_user_id) AS linked_account_count,
+                   (SELECT COUNT(DISTINCT x.telegram_user_id)::int FROM security_verification_attempts x
+                    WHERE x.ip_hash=va.ip_hash AND x.telegram_user_id<>va.telegram_user_id) AS linked_ip_count,
+                   (SELECT COUNT(DISTINCT x.telegram_user_id)::int FROM security_verification_attempts x
+                    WHERE x.network_hash=va.network_hash AND x.telegram_user_id<>va.telegram_user_id) AS linked_network_count
+            FROM security_verification_attempts va
+            LEFT JOIN referrals r ON {user_expression}=va.telegram_user_id
+            WHERE va.risk_level IN ('medium','high')
+            ORDER BY va.created_at DESC
+            LIMIT $1
+            """,
+            max(1, min(100, limit)),
+        )
+        return [dict(row) for row in rows]
+
     async def list_channels(self) -> list[dict[str, Any]]:
         rows = await self._p().fetch("SELECT * FROM force_channels ORDER BY sort_order,id")
         return [dict(row) for row in rows]
@@ -847,6 +1123,11 @@ class Database:
         state_column = self._referral_state_column()
         async with self._p().acquire() as conn:
             async with conn.transaction():
+                user = await conn.fetchrow(
+                    "SELECT device_verified FROM users WHERE telegram_id=$1 FOR UPDATE", user_id
+                )
+                if not user or not user["device_verified"]:
+                    return None
                 # Keep verification and referral accounting in one transaction.
                 # If either update fails, neither state is committed.
                 row = await conn.fetchrow(
