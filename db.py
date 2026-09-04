@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS referrals (
   referred_id BIGINT NOT NULL UNIQUE REFERENCES users(telegram_id) ON DELETE CASCADE,
   state TEXT NOT NULL CHECK (state IN ('pending','subscribed','disclaimer_accepted','completed','invalid')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  completed_at TIMESTAMPTZ
+  completed_at TIMESTAMPTZ,
+  security_status TEXT NOT NULL DEFAULT 'clear' CHECK (security_status IN ('clear','review','suspicious'))
 );
 CREATE TABLE IF NOT EXISTS force_channels (
   id BIGSERIAL PRIMARY KEY,
@@ -451,6 +452,9 @@ class Database:
             await conn.execute("ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()")
             await conn.execute(
                 "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "ALTER TABLE referrals ADD COLUMN IF NOT EXISTS security_status TEXT NOT NULL DEFAULT 'clear'"
             )
             referral_columns = await conn.fetchrow(
                 """
@@ -981,6 +985,22 @@ class Database:
                         "UPDATE users SET device_verified=TRUE, device_verified_at=NOW() WHERE telegram_id=$1",
                         user_id,
                     )
+                user_expression = self._referral_user_expression()
+                if final_status == "suspicious":
+                    await conn.execute(
+                        f"UPDATE referrals SET security_status='suspicious' WHERE {user_expression}=$1",
+                        user_id,
+                    )
+                elif final_status == "medium":
+                    await conn.execute(
+                        f"UPDATE referrals SET security_status='review' WHERE {user_expression}=$1 AND security_status<>'suspicious'",
+                        user_id,
+                    )
+                else:
+                    await conn.execute(
+                        f"UPDATE referrals SET security_status='clear' WHERE {user_expression}=$1 AND security_status='review'",
+                        user_id,
+                    )
                 await conn.execute(
                     "INSERT INTO security_events (telegram_user_id,event_type,details) VALUES ($1,$2,$3::jsonb)",
                     user_id,
@@ -1015,7 +1035,7 @@ class Database:
             f"""
             SELECT va.id, va.telegram_user_id, va.risk_level, va.risk_score, va.risk_reasons,
                    va.status, va.provider_status, va.vpn, va.proxy, va.tor, va.hosting,
-                   va.network_label, va.created_at,
+                   va.network_label, va.created_at, r.security_status,
                    {owner_expression} AS referrer_id,
                    (SELECT COUNT(DISTINCT x.telegram_user_id)::int FROM security_verification_attempts x
                     WHERE x.install_hash=va.install_hash AND x.telegram_user_id<>va.telegram_user_id) AS linked_device_count,
@@ -1134,6 +1154,7 @@ class Database:
                     f"UPDATE referrals SET {state_column}='completed', completed_at=NOW() "
                     f"WHERE {user_expression}=$1 AND {state_column} IN "
                     "('pending','subscribed','disclaimer_accepted') "
+                    "AND COALESCE(security_status,'clear') <> 'suspicious' "
                     f"RETURNING {owner_expression} AS referrer_id",
                     user_id,
                 )
