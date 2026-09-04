@@ -38,7 +38,8 @@ def setup_admin_router(
     router = Router(name="admins")
 
     async def allowed(user_id: int, permission: str | None = None) -> bool:
-        return await db.is_admin(user_id, permission)
+        # Every registered admin has the same full access as the Owner.
+        return await db.is_admin(user_id)
 
     async def admin_screen(callback: CallbackQuery, title: str, body: str, keyboard: Any) -> None:
         if callback.message:
@@ -101,52 +102,6 @@ def setup_admin_router(
         parts = data.split(":")
         action = parts[1]
         admin_id = callback.from_user.id
-        permission_by_action = {
-            "dashboard": "dashboard",
-            "users": "users",
-            "user_search": "users",
-            "user_recent": "users",
-            "user_banned": "users",
-            "uclaims": "users",
-            "points": "users",
-            "add_points": "users",
-            "remove_points": "users",
-            "rewards": "rewards",
-            "rew_add": "rewards",
-            "rew_bulk": "rewards",
-            "stock": "rewards",
-            "stock_add": "rewards",
-            "stock_product": "rewards",
-            "stock_add_code": "rewards",
-            "stock_how_to_use": "rewards",
-            "stock_codes_done": "rewards",
-            "stock_toggle": "rewards",
-            "stock_points": "rewards",
-            "milestones": "rewards",
-            "inventory": "rewards",
-            "history": "rewards",
-            "failed": "rewards",
-            "retry": "rewards",
-            "referrals": "referrals",
-            "force": "force",
-            "force_add": "force",
-            "content": "content",
-            "cont_edit": "content",
-            "cont_preview": "content",
-            "broadcast": "broadcast",
-            "broadcast_start": "broadcast",
-            "broadcast_confirm": "broadcast",
-            "settings": "settings",
-            "toggle_referrals": "settings",
-            "toggle_maintenance": "settings",
-            "toggle_disclaimer": "settings",
-            "support_setup": "settings",
-        }
-        if action in permission_by_action and not await allowed(
-            admin_id, permission_by_action[action]
-        ):
-            await callback.message.answer("Your admin role does not have permission for this section.")
-            return
         if action in {"add_points", "remove_points"}:
             direction = 1 if action == "add_points" else -1
             sessions.set(admin_id, "points_target", direction=direction)
@@ -676,17 +631,12 @@ def setup_admin_router(
                 finish=False,
             )
             body = "\n".join(f"• <code>{a['telegram_id']}</code> · {a['role']}" for a in admins)
-            admin_rows = [
-                [(f"🔐 Permissions {a['telegram_id']}", f"a:admin_perms:{a['telegram_id']}")]
-                for a in admins
-                if a["role"] != "owner"
-            ]
             await admin_screen(
                 callback,
                 "Administrators",
                 body,
                 admin_section(
-                    [[("➕ Add Admin", "a:admin_add"), ("➖ Remove Admin", "a:admin_remove")], *admin_rows]
+                    [[("➕ Add Admin", "a:admin_add"), ("➖ Remove Admin", "a:admin_remove")]]
                 ),
             )
         elif action == "admin_add":
@@ -696,10 +646,8 @@ def setup_admin_router(
             sessions.set(admin_id, "admin_remove")
             await callback.message.answer("Send the Telegram User ID to remove.")
         elif action == "admin_perms" and len(parts) > 2:
-            sessions.set(admin_id, "admin_perms", user_id=int(parts[2]))
             await callback.message.answer(
-                "Send comma-separated permissions:\n"
-                "<code>dashboard,users,rewards,referrals,force,content,broadcast,settings</code>"
+                "Per-admin permissions are disabled. Every registered admin has full Owner access."
             )
         elif action == "logs":
             page = int(parts[2]) if len(parts) > 2 else 0
@@ -1122,26 +1070,10 @@ def setup_admin_router(
             except ValueError:
                 await message.answer("Send a numeric Telegram User ID.")
         elif flow == "admin_perms":
-            permissions = {
-                item.strip(): True
-                for item in (body or "").split(",")
-                if item.strip()
-                in {"dashboard", "users", "rewards", "referrals", "force", "content", "broadcast", "settings"}
-            }
-
-            async def save_permissions() -> None:
-                await db.set_admin_permissions(session["user_id"], permissions)
-                await db.audit(
-                    message.from_user.id,
-                    "admin_permissions_changed",
-                    "admin",
-                    str(session["user_id"]),
-                    permissions,
-                )
-
-            status, _ = await animate_message("Saving permissions", save_permissions)
             sessions.pop(message.from_user.id)
-            await status.edit_text("✓ Admin permissions updated.")
+            await message.answer(
+                "Per-admin permissions are disabled. Every registered admin has full Owner access."
+            )
         elif flow == "user_search":
             try:
                 user_id = int((body or "").strip())
