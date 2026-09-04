@@ -4,6 +4,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
+    WebAppInfo,
     ReplyKeyboardMarkup,
 )
 from aiogram.enums import ButtonStyle
@@ -44,7 +45,7 @@ def back_keyboard(callback: str = "a:home") -> InlineKeyboardMarkup:
     )
 
 
-def gate_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
+def gate_keyboard(channels: list[dict], miniapp_url: str = "") -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for channel in channels:
         label = channel["title"][:28] or f"Channel {channel['id']}"
@@ -59,8 +60,19 @@ def gate_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
                     )
                 ]
             )
+    if miniapp_url:
+        rows.append([InlineKeyboardButton(text="📱 Verify Device", web_app=WebAppInfo(url=miniapp_url))])
     rows.append([InlineKeyboardButton(text="✓ Verify subscription", callback_data="u:verify")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def device_verification_keyboard(miniapp_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📱 Verify Device", web_app=WebAppInfo(url=miniapp_url))],
+            [InlineKeyboardButton(text="✓ Continue", callback_data="u:verify")],
+        ]
+    )
 
 
 def disclaimer_keyboard() -> InlineKeyboardMarkup:
