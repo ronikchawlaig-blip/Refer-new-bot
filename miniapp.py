@@ -8,6 +8,7 @@ import zlib
 from typing import Any
 from uuid import UUID
 
+from aiogram import Bot
 from aiohttp import ClientSession, ClientTimeout, web
 
 from db import Database
@@ -35,6 +36,7 @@ class MiniAppServer:
     def __init__(
         self,
         db: Database,
+        bot: Bot,
         bot_token: str,
         hash_secret: str,
         ipinfo_token: str = "",
@@ -46,6 +48,7 @@ class MiniAppServer:
         reputation_cache_seconds: int = 3600,
     ) -> None:
         self.db = db
+        self.bot = bot
         self.bot_token = bot_token
         self.hash_secret = hash_secret
         self.ipinfo_token = ipinfo_token
@@ -250,6 +253,14 @@ class MiniAppServer:
             response.set_cookie(COOKIE_NAME, install_id, max_age=COOKIE_MAX_AGE, httponly=True, secure=True, samesite="Lax")
         return response
 
+    async def _send_verification_message(self, user_id: int, key: str, fallback: str) -> None:
+        try:
+            content = await self.db.get_content(key)
+            text = str(content.get("body") or "").strip() or fallback
+            await self.bot.send_message(user_id, text)
+        except Exception:
+            log.exception("Unable to send verification result message %s to %s", key, user_id)
+
     async def complete_verification(self, request: web.Request) -> web.Response:
         ip = self._client_ip(request)
         if not await self._api_allowed(request, ip):
@@ -281,10 +292,20 @@ class MiniAppServer:
             fingerprint_hash,
         )
         if result["status"] == "passed":
+            await self._send_verification_message(
+                verified.user_id,
+                "verification_complete",
+                "╭━━━━━━━━━━━━━━━━━━╮\n   ✅ VERIFICATION\n       COMPLETE\n╰━━━━━━━━━━━━━━━━━━╯\n\nYour device has been successfully verified.\n\n🔓 Access Granted\n🛡️ Security Check Passed\n\nYou can now continue using the bot.",
+            )
             return web.json_response({"status": "passed", "message": "Device verification complete."}, headers={"Cache-Control": "no-store"})
         if result["status"] == "medium":
             return web.json_response({"status": "medium", "message": "Please make one more verification attempt."}, headers={"Cache-Control": "no-store"})
         if result["status"] == "suspicious":
+            await self._send_verification_message(
+                verified.user_id,
+                "verification_rejected",
+                "╭━━━━━━━━━━━━━━━━━━╮\n   🚫 VERIFICATION\n        REJECTED\n╰━━━━━━━━━━━━━━━━━━╯\n\nMultiple accounts/devices linked to this verification were detected.\n\n⚠️ Referral abuse is strictly prohibited.\n❌ This referral has been invalidated.\n🔒 Further attempts may be blocked.\n\nDon't try to bypass the system.",
+            )
             return self._error("We could not approve this verification. Contact Support if this is a mistake.", 403)
         if result["status"] == "expired":
             return self._error("This verification session expired. Reopen the Mini App.", 410)
