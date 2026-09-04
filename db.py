@@ -371,6 +371,27 @@ DEFAULT_CONTENT = {
     "reward_success": "🎁 Your reward has been delivered.",
     "reward_empty": "Your next reward is not available yet. Please check back soon.",
     "error": "Something went wrong. Please try again in a moment.",
+    "verification_complete": (
+        "╭━━━━━━━━━━━━━━━━━━╮\n"
+        "   ✅ VERIFICATION\n"
+        "       COMPLETE\n"
+        "╰━━━━━━━━━━━━━━━━━━╯\n\n"
+        "Your device has been successfully verified.\n\n"
+        "🔓 Access Granted\n"
+        "🛡️ Security Check Passed\n\n"
+        "You can now continue using the bot."
+    ),
+    "verification_rejected": (
+        "╭━━━━━━━━━━━━━━━━━━╮\n"
+        "   🚫 VERIFICATION\n"
+        "        REJECTED\n"
+        "╰━━━━━━━━━━━━━━━━━━╯\n\n"
+        "Multiple accounts/devices linked to this verification were detected.\n\n"
+        "⚠️ Referral abuse is strictly prohibited.\n"
+        "❌ This referral has been invalidated.\n"
+        "🔒 Further attempts may be blocked.\n\n"
+        "Don't try to bypass the system."
+    ),
 }
 
 
