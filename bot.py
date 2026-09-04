@@ -30,6 +30,7 @@ async def main() -> None:
     dp = Dispatcher()
     miniapp_server = MiniAppServer(
         db,
+        bot,
         settings.token,
         settings.verification_hash_secret,
         settings.ipinfo_token,
