@@ -53,8 +53,7 @@ can verify membership. `OWNER_TELEGRAM_ID` is also seeded as the database Owner.
 
 ## Railway deployment
 
-Create a Railway service from this folder and set the service root directory to
-`telegram-bot`. Add these variables in Railway:
+Create a Railway service from this repository and use the repository root as the service root (the runnable bot.py, db.py and Mini App server are at the root). Add these variables in Railway:
 
 - `TELEGRAM_BOT_TOKEN`
 - `DATABASE_URL` (Railway PostgreSQL variable or external PostgreSQL URL)
