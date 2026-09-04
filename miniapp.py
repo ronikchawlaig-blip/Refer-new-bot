@@ -64,7 +64,7 @@ class MiniAppServer:
         app.router.add_get("/miniapp", self.miniapp)
         app.router.add_post("/api/verification/start", self.start_verification)
         app.router.add_post("/api/verification/complete", self.complete_verification)
-        app.router.add_get("/api/verification/status", self.verification_status)
+        app.router.add_post("/api/verification/status", self.verification_status)
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, host, port)
@@ -153,7 +153,7 @@ class MiniAppServer:
     def _error(message: str, status: int = 400) -> web.Response:
         return web.json_response({"message": message}, status=status, headers={"Cache-Control": "no-store"})
 
-    async def _verified_request(self, request: web.Request) -> tuple[dict[str, Any], str, str, str, str | None] | web.Response:
+    async def _verified_request(self, request: web.Request) -> tuple[dict[str, Any], int, str, str, str | None, str, str] | web.Response:
         body = await self._json(request)
         init_data = body.get("init_data")
         try:
