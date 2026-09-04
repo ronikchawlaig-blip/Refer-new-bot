@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit, urlunsplit
 
 from dotenv import load_dotenv
 
@@ -32,15 +31,29 @@ class Settings:
     reputation_cache_seconds: int
 
 
+def _normalise_url(value: str) -> str:
+    value = value.strip().rstrip("/")
+    if not value:
+        return ""
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), parsed.query, parsed.fragment)
+    ).rstrip("/")
+
+
 def _miniapp_url() -> str:
-    configured = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+    configured = _normalise_url(os.getenv("MINIAPP_URL", ""))
     if configured:
-        return configured
-    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+        parsed = urlsplit(configured)
+        return configured if parsed.path else f"{configured}/miniapp"
+
+    base = _normalise_url(os.getenv("PUBLIC_BASE_URL", ""))
     if not base:
-        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().rstrip("/")
-        if domain:
-            base = f"https://{domain}"
+        base = _normalise_url(os.getenv("RAILWAY_PUBLIC_DOMAIN", ""))
     return f"{base}/miniapp" if base else ""
 
 
