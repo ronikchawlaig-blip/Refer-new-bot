@@ -19,8 +19,8 @@ class SecurityTests(unittest.TestCase):
             "query_id": "test-query",
             "user": json.dumps({"id": 12345, "first_name": "Test"}, separators=(",", ":")),
         }
-        data_check_string = "\\n".join(f"{key}={fields[key]}" for key in sorted(fields))
-        secret = hmac.new(self.token.encode(), b"WebAppData", hashlib.sha256).digest()
+        data_check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
+        secret = hmac.new(b"WebAppData", self.token.encode(), hashlib.sha256).digest()
         fields["hash"] = hmac.new(secret, data_check_string.encode(), hashlib.sha256).hexdigest()
         return urlencode(fields)
 
