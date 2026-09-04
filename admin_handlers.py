@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from html import escape
 from typing import Any, Awaitable, Callable
 
@@ -14,6 +15,18 @@ from services import animated, send_reward
 from states import SessionStore
 from ui import admin_home, admin_section, back_keyboard, confirm_keyboard, progress_bar, screen
 
+
+
+
+def _security_reasons(row: dict[str, Any]) -> str:
+    raw = row.get("risk_reasons") or []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (TypeError, ValueError):
+            raw = []
+    reasons = [str(item) for item in raw if item]
+    return "; ".join(reasons[:5]) or "No additional signal detail"
 
 def _incoming(message: Message) -> tuple[str, str | None, str | None]:
     if message.text:
@@ -465,6 +478,38 @@ def setup_admin_router(
                 "Manual user adjustments are available from a user profile."
             )
             await admin_screen(callback, "Referrals", body, admin_section([[("🔍 Manage User", "a:user_search")]]))
+        elif action == "security":
+            rows = await animated(
+                callback.message,
+                lambda: db.suspicious_verifications(limit=20),
+                "Loading security alerts",
+                finish=False,
+            )
+            entries = []
+            for row in rows:
+                provider_flags = ", ".join(
+                    label for label, enabled in (
+                        ("VPN", row.get("vpn")), ("Proxy", row.get("proxy")),
+                        ("Tor", row.get("tor")), ("Hosting", row.get("hosting")),
+                    ) if enabled
+                ) or "No provider flags"
+                entries.append(
+                    f"<b>{escape(str(row['risk_level']).upper())} · {row['risk_score']}/100</b>\n"
+                    f"User: <code>{row['telegram_user_id']}</code> · Referrer: <code>{row['referrer_id'] or '—'}</code>\n"
+                    f"Status: {escape(str(row['status']))} · Device linked accounts: {row['linked_device_count']}\n"
+                    f"Fingerprint linked accounts: {row['linked_account_count']}\n"
+                    f"IP correlation: {row['linked_ip_count']} · Network: {row['linked_network_count']}"
+                    + (f" ({escape(str(row['network_label']))})" if row.get("network_label") else "")
+                    + f"\nReputation: {escape(str(row['provider_status']))} · {escape(provider_flags)}\n"
+                    f"Signals: {escape(_security_reasons(row))}"
+                )
+            body = "\n\n".join(entries) or "No medium- or high-risk verification attempts yet."
+            await admin_screen(
+                callback,
+                "Security Alerts",
+                body,
+                admin_section([[('🔄 Refresh', 'a:security')]]),
+            )
         elif action == "force":
             channels = await animated(
                 callback.message,
