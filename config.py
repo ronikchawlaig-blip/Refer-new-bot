@@ -25,6 +25,11 @@ class Settings:
     ipinfo_token: str
     verification_hash_secret: str
     trust_proxy: bool
+    verification_max_age: int
+    verification_rate_window: int
+    verification_max_attempts: int
+    verification_max_api_requests: int
+    reputation_cache_seconds: int
 
 
 def _miniapp_url() -> str:
@@ -70,4 +75,9 @@ def load_settings() -> Settings:
         ipinfo_token=os.getenv("IPINFO_TOKEN", "").strip(),
         verification_hash_secret=os.getenv("VERIFICATION_HASH_SECRET", "").strip() or token,
         trust_proxy=os.getenv("TRUST_PROXY", "true").strip().lower() not in {"0", "false", "no"},
+        verification_max_age=max(60, int(os.getenv("VERIFICATION_MAX_AGE_SECONDS", "900") or "900")),
+        verification_rate_window=max(60, int(os.getenv("VERIFICATION_RATE_WINDOW_SECONDS", "3600") or "3600")),
+        verification_max_attempts=max(1, int(os.getenv("VERIFICATION_MAX_ATTEMPTS", "10") or "10")),
+        verification_max_api_requests=max(10, int(os.getenv("VERIFICATION_MAX_API_REQUESTS", "60") or "60")),
+        reputation_cache_seconds=max(60, int(os.getenv("REPUTATION_CACHE_SECONDS", "3600") or "3600")),
     )

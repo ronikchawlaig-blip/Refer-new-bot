@@ -170,14 +170,12 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
         return False
     await db.mark_subscribed(user["telegram_id"])
     user = await db.get_user(user["telegram_id"]) or user
-    if await db.get_setting("disclaimer_enabled", "true") == "true" and not user["disclaimer_accepted"]:
-        disclaimer = await db.get_content("disclaimer")
-        await status.edit_text(
-            screen("One important step", disclaimer["body"]),
-            reply_markup=disclaimer_keyboard(),
-        )
-        return False
-    if miniapp_url and not await db.device_verification_passed(user["telegram_id"]):
+    if not await db.device_verification_passed(user["telegram_id"]):
+        if not miniapp_url:
+            await status.edit_text(
+                screen("Verification unavailable", "The secure device verification service is not configured yet. Please contact Support.")
+            )
+            return False
         await status.edit_text(
             screen(
                 "Verify your device",
@@ -185,6 +183,13 @@ async def _show_gate(message: Message, bot: Bot, db: Database, user: dict[str, A
                 "Your referral will only be credited after verification passes.",
             ),
             reply_markup=device_verification_keyboard(miniapp_url),
+        )
+        return False
+    if await db.get_setting("disclaimer_enabled", "true") == "true" and not user["disclaimer_accepted"]:
+        disclaimer = await db.get_content("disclaimer")
+        await status.edit_text(
+            screen("One important step", disclaimer["body"]),
+            reply_markup=disclaimer_keyboard(),
         )
         return False
     referrer_id = await db.complete_gate(user["telegram_id"])
@@ -219,7 +224,11 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             content = await db.get_content("maintenance")
             await message.answer(screen("Temporarily unavailable", content["body"]))
             return False
-        if user["is_verified"] and await _refresh_verified_user(bot, db, user):
+        if (
+            user["is_verified"]
+            and await _refresh_verified_user(bot, db, user)
+            and await db.device_verification_passed(user["telegram_id"])
+        ):
             return True
         return await _show_gate(message, bot, db, user, miniapp_url)
 
@@ -254,8 +263,8 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         if user and user["is_verified"]:
             await _refresh_verified_user(bot, db, user)
             user = await db.get_user(message.from_user.id)
-        if user and not user["is_verified"]:
-            if not await _show_gate(message, bot, db, user):
+        if user and (not user["is_verified"] or not await db.device_verification_passed(message.from_user.id)):
+            if not await _show_gate(message, bot, db, user, miniapp_url):
                 return
         support_text = await db.get_setting("support_button_text", "💬 Support")
         await _home(message, db, bot_name, support_text)
@@ -301,6 +310,15 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
             )
             return
         await db.mark_subscribed(callback.from_user.id)
+        if not await db.device_verification_passed(callback.from_user.id):
+            if miniapp_url:
+                await callback.message.edit_text(
+                    screen("Verify your device", "Complete device verification before accepting the disclaimer."),
+                    reply_markup=device_verification_keyboard(miniapp_url),
+                )
+            else:
+                await callback.message.edit_text("Device verification is not configured yet. Please contact Support.")
+            return
         support_text, is_admin, referrer_id = await animated(
             callback.message,
             lambda: _activate_user(callback.from_user.id, db),
@@ -541,7 +559,7 @@ def setup_user_router(db: Database, bot: Bot, sessions: SessionStore, bot_name: 
         if user["is_verified"] and not await _refresh_verified_user(bot, db, user):
             await callback.answer("Please verify your access first.", show_alert=True)
             return None
-        if not user["is_verified"]:
+        if not user["is_verified"] or not await db.device_verification_passed(callback.from_user.id):
             await callback.answer("Please verify your access first.", show_alert=True)
             return None
         if await db.get_setting("maintenance_enabled", "false") == "true" and not await db.is_admin(

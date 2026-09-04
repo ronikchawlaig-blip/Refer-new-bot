@@ -34,6 +34,11 @@ async def main() -> None:
         settings.verification_hash_secret,
         settings.ipinfo_token,
         settings.trust_proxy,
+        settings.verification_max_age,
+        settings.verification_rate_window,
+        settings.verification_max_attempts,
+        settings.verification_max_api_requests,
+        settings.reputation_cache_seconds,
     )
     sessions = SessionStore()
     worker: asyncio.Task[None] | None = None

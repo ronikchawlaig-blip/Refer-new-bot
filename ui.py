@@ -131,6 +131,7 @@ def admin_home() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="📢 Broadcast", callback_data="a:broadcast"),
                 InlineKeyboardButton(text="⚙️ Settings", callback_data="a:settings"),
             ],
+            [InlineKeyboardButton(text="🛡️ Security", callback_data="a:security")],
             [
                 InlineKeyboardButton(text="👑 Admins", callback_data="a:admins"),
                 InlineKeyboardButton(text="📜 Audit Logs", callback_data="a:logs"),
