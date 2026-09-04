@@ -704,8 +704,17 @@ class Database:
             return False
         if row["role"] == "owner" or not permission:
             return True
-        permissions = row["permissions"] or {}
-        return bool(permissions.get(permission))
+        raw_permissions = row["permissions"] or {}
+        if isinstance(raw_permissions, str):
+            try:
+                permissions = json.loads(raw_permissions)
+            except (TypeError, ValueError):
+                permissions = {}
+        elif isinstance(raw_permissions, dict):
+            permissions = raw_permissions
+        else:
+            permissions = {}
+        return bool(permissions.get(permission)) if isinstance(permissions, dict) else False
 
     async def admin_role(self, user_id: int) -> str | None:
         return await self._p().fetchval("SELECT role FROM admins WHERE telegram_id=$1", user_id)
