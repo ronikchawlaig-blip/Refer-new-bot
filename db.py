@@ -952,16 +952,24 @@ class Database:
         )
 
     async def finish_verification(
-        self, session_hash: str, user_id: int, init_data_hash: str
+        self,
+        session_hash: str,
+        user_id: int,
+        init_data_hash: str,
+        install_hash: str,
+        fingerprint_hash: str,
     ) -> dict[str, Any]:
         async with self._p().acquire() as conn:
             async with conn.transaction():
                 attempt = await conn.fetchrow(
                     "SELECT * FROM security_verification_attempts WHERE session_hash=$1 "
-                    "AND telegram_user_id=$2 AND init_data_hash=$3 FOR UPDATE",
+                     "AND telegram_user_id=$2 AND init_data_hash=$3 "
+                     "AND install_hash=$4 AND fingerprint_hash=$5 FOR UPDATE",
                     session_hash,
                     user_id,
                     init_data_hash,
+                    install_hash,
+                    fingerprint_hash,
                 )
                 if not attempt:
                     return {"status": "invalid"}
