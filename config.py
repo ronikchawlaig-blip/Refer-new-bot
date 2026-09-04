@@ -19,6 +19,24 @@ class Settings:
     support_button_text: str
     support_instructions: str
     log_level: str
+    miniapp_url: str
+    web_host: str
+    web_port: int
+    ipinfo_token: str
+    verification_hash_secret: str
+    trust_proxy: bool
+
+
+def _miniapp_url() -> str:
+    configured = os.getenv("MINIAPP_URL", "").strip().rstrip("/")
+    if configured:
+        return configured
+    base = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if not base:
+        domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip().rstrip("/")
+        if domain:
+            base = f"https://{domain}"
+    return f"{base}/miniapp" if base else ""
 
 
 def load_settings() -> Settings:
@@ -46,4 +64,10 @@ def load_settings() -> Settings:
             "Tap below to open our Support Bot. Our team will respond as soon as possible.",
         ),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        miniapp_url=_miniapp_url(),
+        web_host=os.getenv("WEB_HOST", "0.0.0.0").strip() or "0.0.0.0",
+        web_port=int(os.getenv("PORT", "8080") or "8080"),
+        ipinfo_token=os.getenv("IPINFO_TOKEN", "").strip(),
+        verification_hash_secret=os.getenv("VERIFICATION_HASH_SECRET", "").strip() or token,
+        trust_proxy=os.getenv("TRUST_PROXY", "true").strip().lower() not in {"0", "false", "no"},
     )
